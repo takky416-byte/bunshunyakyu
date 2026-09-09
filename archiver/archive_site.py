@@ -16,10 +16,17 @@ yakyu.bunshun.jp のブログ記事を個人アーカイブ用にローカル保
     # JS で描画されるコメント(Disqus / Facebookコメント等)も取りたい場合
     python archive_site.py --url https://yakyu.bunshun.jp/blogs/af9f98c6821b --render
 
-    # 差分取得(2回目以降、新規記事・コメント/リアクションが更新された記事だけ取得)
+    # 差分取得(2回目以降、新規記事・コメント/リアクションが更新された記事だけ取得。
+    # ついでに本文が編集された記事も検知するが、コメントが付かない編集は
+    # この一覧に出てこない可能性があるため、確実ではない)
     python archive_site.py --login-url https://yakyu.bunshun.jp/login --browser-login --render \
         --list-url "https://yakyu.bunshun.jp/blogs?order_type=comment_update_desc" \
         --infinite-scroll --update
+
+    # 全件チェック(本文の編集を漏れなく検知したい場合。時間は初回フル取得と同程度かかるが、
+    # 変更があった記事だけ上書き保存する)
+    python archive_site.py --login-url https://yakyu.bunshun.jp/login --browser-login --render \
+        --list-url https://yakyu.bunshun.jp/blogs --infinite-scroll --recheck
 
     # 会員限定記事の場合(先にログインしてからセッションを使って取得)
     export BUNSHUN_USERNAME="your_id"
@@ -48,6 +55,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -582,6 +590,40 @@ def parse_article(url: str, html: str) -> Article:
     )
 
 
+def compute_body_hash(body_html: str) -> str:
+    """本文の実質的な内容(タグを除いたテキスト)からハッシュ値を計算する。
+    本文が編集されたかどうかの比較に使う。"""
+    text = BeautifulSoup(body_html, "html.parser").get_text(" ", strip=True)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def article_changed(article: Article, prev: dict | None) -> tuple[bool, str]:
+    """前回のindexエントリ(prev)と比較して、新規または内容が変わっているかを判定する。
+    戻り値は (変化したか, 変化の理由)。"""
+    new_hash = compute_body_hash(article.body_html)
+    if prev is None:
+        return True, "新規記事"
+    if prev.get("content_hash") != new_hash:
+        return True, "本文が編集された"
+    if prev.get("comments_count") != len(article.comments):
+        return True, "コメントが更新された"
+    if prev.get("reactions_count") != len(article.reactions):
+        return True, "リアクションが更新された"
+    return False, ""
+
+
+def build_index_entry(article: Article, out_dir: Path, out_root: Path) -> dict:
+    return {
+        "title": article.title,
+        "date": article.date,
+        "dir": str(out_dir.relative_to(out_root)),
+        "archived_at": datetime.now().isoformat(timespec="seconds"),
+        "comments_count": len(article.comments),
+        "reactions_count": len(article.reactions),
+        "content_hash": compute_body_hash(article.body_html),
+    }
+
+
 def save_article(article: Article, out_root: Path, session: requests.Session, delay: float) -> Path:
     if not article.date:
         print(f"  [警告] 投稿日を取得できなかったため、取得日の日付でフォルダ分けします: {article.url}",
@@ -675,14 +717,7 @@ def archive_one(url: str, out_root: Path, session: requests.Session, index: dict
         return
     article = parse_article(url, html)
     out_dir = save_article(article, out_root, session, args.delay)
-    index[url] = {
-        "title": article.title,
-        "date": article.date,
-        "dir": str(out_dir.relative_to(out_root)),
-        "archived_at": datetime.now().isoformat(timespec="seconds"),
-        "comments_count": len(article.comments),
-        "reactions_count": len(article.reactions),
-    }
+    index[url] = build_index_entry(article, out_dir, out_root)
     save_index(out_root, index)
     print(f"  → 保存先: {out_dir} (コメント {len(article.comments)} 件 / リアクション {len(article.reactions)} 件)")
     time.sleep(args.delay)
@@ -720,24 +755,12 @@ def run_update_mode(args, session: requests.Session, out_root: Path, index: dict
 
         article = parse_article(link, html)
         prev = index.get(link)
-        is_new = prev is None
-        changed = is_new or (
-            prev.get("comments_count") != len(article.comments)
-            or prev.get("reactions_count") != len(article.reactions)
-        )
+        changed, reason = article_changed(article, prev)
 
         if changed:
             out_dir = save_article(article, out_root, session, args.delay)
-            index[link] = {
-                "title": article.title,
-                "date": article.date,
-                "dir": str(out_dir.relative_to(out_root)),
-                "archived_at": datetime.now().isoformat(timespec="seconds"),
-                "comments_count": len(article.comments),
-                "reactions_count": len(article.reactions),
-            }
+            index[link] = build_index_entry(article, out_dir, out_root)
             save_index(out_root, index)
-            reason = "新規記事" if is_new else "コメント/リアクションが更新"
             print(f"  → 保存しました({reason}): {out_dir}")
             updated += 1
             unchanged_streak = 0
@@ -751,6 +774,51 @@ def run_update_mode(args, session: requests.Session, out_root: Path, index: dict
         time.sleep(args.delay)
 
     print(f"[差分チェック完了] 確認 {checked} 件 / 新規・更新保存 {updated} 件")
+
+
+def run_recheck_mode(args, session: requests.Session, out_root: Path, index: dict) -> None:
+    """全件チェックモード: 一覧(--infinite-scroll 等で通常どおり収集)の全記事を実際に開き、
+    新規記事・本文編集・コメント/リアクション数の変化のいずれかがあった記事だけ保存し直す。
+    早期打ち切りはせず、全件確認する(コメントが付かない本文だけの編集も漏れなく検知するため)。"""
+    print(f"[全件チェック] {args.list_url}")
+    if args.infinite_scroll:
+        list_html = fetch_list_html_infinite_scroll(
+            args.list_url, args.link_pattern, args.max_scrolls, args.scroll_pause_ms, session=session
+        )
+    else:
+        list_html = fetch_html(args.list_url, session, render=args.render)
+    links = discover_article_links(list_html, args.list_url, args.link_pattern)
+    print(f"  一覧から {len(links)} 件のリンクを検出しました")
+
+    checked = 0
+    updated = 0
+    for link in links:
+        if args.max_articles and checked >= args.max_articles:
+            print(f"[中断] --max-articles の上限({args.max_articles}件)に達しました")
+            break
+        checked += 1
+        print(f"[確認中 {checked}/{len(links)}] {link}")
+        try:
+            html = fetch_html(link, session, render=args.render)
+        except requests.RequestException as e:
+            print(f"  [エラー] 取得失敗: {e}", file=sys.stderr)
+            continue
+
+        article = parse_article(link, html)
+        prev = index.get(link)
+        changed, reason = article_changed(article, prev)
+
+        if changed:
+            out_dir = save_article(article, out_root, session, args.delay)
+            index[link] = build_index_entry(article, out_dir, out_root)
+            save_index(out_root, index)
+            print(f"  → 保存しました({reason}): {out_dir}")
+            updated += 1
+        else:
+            print("  変化なし(スキップ)")
+        time.sleep(args.delay)
+
+    print(f"[全件チェック完了] 確認 {checked} 件 / 新規・更新保存 {updated} 件")
 
 
 def main() -> None:
@@ -786,12 +854,20 @@ def main() -> None:
                               "--update-stop-after 件連続で変化なしなら打ち切る")
     parser.add_argument("--update-stop-after", type=int, default=5,
                          help="--update 使用時、何件連続で変化なしだったら打ち切るか(デフォルト5)")
+    parser.add_argument("--recheck", action="store_true",
+                         help="全件チェックモード。一覧の全記事を実際に開き、新規・本文編集・"
+                              "コメント/リアクション数の変化を確認して、変わった記事だけ保存し直す"
+                              "(早期打ち切りはしないため、初回のフル取得と同程度の時間がかかる)")
     args = parser.parse_args()
 
     if not args.url and not args.list_url:
         parser.error("--url か --list-url のどちらかを指定してください")
     if args.update and not args.list_url:
         parser.error("--update を使う場合は --list-url も指定してください")
+    if args.recheck and not args.list_url:
+        parser.error("--recheck を使う場合は --list-url も指定してください")
+    if args.update and args.recheck:
+        parser.error("--update と --recheck は同時に指定できません")
 
     out_root = Path(args.out)
     out_root.mkdir(parents=True, exist_ok=True)
@@ -823,6 +899,10 @@ def main() -> None:
 
     if args.update:
         run_update_mode(args, session, out_root, index)
+        return
+
+    if args.recheck:
+        run_recheck_mode(args, session, out_root, index)
         return
 
     saved_count = 0
