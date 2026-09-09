@@ -68,13 +68,18 @@ python archive_site.py --list-url https://yakyu.bunshun.jp/blogs --infinite-scro
 ```
 archive/
   index.json                       アーカイブ済み記事の一覧(重複防止用)
-  2024-05-01-xxxxxx/
-    article.md                     本文(Markdown、フロントマター付き)
-    article.html                   取得時点の生HTML(バックアップ用)
-    images/                        本文中の画像
-    comments.json                  取得できたコメント(取得できない場合は空配列)
-    reactions.json                 取得できたリアクション/いいね(取得できない場合は空配列)
+  2024/
+    05/
+      2024-05-01-xxxxxx-記事タイトル/
+        article.md                 本文(Markdown、フロントマター付き)
+        article.html               取得時点の生HTML(バックアップ用)
+        images/                    本文中の画像
+        comments.json              取得できたコメント(取得できない場合は空配列)
+        reactions.json             取得できたリアクション/いいね(取得できない場合は空配列)
 ```
+
+記事数が多くなることを想定し、投稿日の「年/月」ごとにフォルダを分けて保存します
+(投稿日が取得できない記事は、取得した日の年月に保存されます)。
 
 ## コメント・リアクションがJavaScriptで後から読み込まれる場合
 

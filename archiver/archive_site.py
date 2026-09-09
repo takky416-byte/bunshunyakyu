@@ -439,6 +439,13 @@ def extract_date(soup: BeautifulSoup) -> str:
     time_tag = soup.find("time")
     if time_tag:
         return (time_tag.get("datetime") or time_tag.get_text(strip=True))[:10]
+    # yakyu.bunshun.jp(OSIRO系)は <time> を使わず、投稿日時を
+    # "2026/08/22 09:53" のようなテキストで表示しているため、それも拾う。
+    posted = soup.select_one(".articleMetaItemsLeft__name__posted")
+    if posted:
+        m = re.match(r"(\d{4})/(\d{1,2})/(\d{1,2})", posted.get_text(strip=True))
+        if m:
+            return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
     return ""
 
 
@@ -536,10 +543,12 @@ def parse_article(url: str, html: str) -> Article:
 
 def save_article(article: Article, out_root: Path, session: requests.Session, delay: float) -> Path:
     date_part = article.date or datetime.now().strftime("%Y-%m-%d")
+    m = re.match(r"(\d{4})-(\d{2})", date_part)
+    year, month = m.groups() if m else datetime.now().strftime("%Y-%m").split("-")
     url_id = Path(urlparse(article.url).path).name or "article"
     title_slug = slugify(article.title, fallback="")
     dir_name = f"{date_part}-{url_id}" + (f"-{title_slug}" if title_slug else "")
-    out_dir = out_root / dir_name
+    out_dir = out_root / year / month / dir_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     content_soup = BeautifulSoup(article.body_html, "html.parser")
