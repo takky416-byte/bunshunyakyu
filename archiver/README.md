@@ -73,7 +73,29 @@ archive/
     article.html                   取得時点の生HTML(バックアップ用)
     images/                        本文中の画像
     comments.json                  取得できたコメント(取得できない場合は空配列)
+    reactions.json                 取得できたリアクション/いいね(取得できない場合は空配列)
 ```
+
+## コメント・リアクションがJavaScriptで後から読み込まれる場合
+
+yakyu.bunshun.jp のようなコミュニティサイトでは、記事本文は最初のHTMLに含まれていても、
+コメントやリアクション(いいね・スタンプ等)はページを開いた後にJavaScriptが追加で読み込む
+実装になっていることがあります。この場合は `--render` を付けてください(要 Playwright)。
+
+```bash
+python archive_site.py --login-url https://yakyu.bunshun.jp/login --browser-login --render \
+    --url https://yakyu.bunshun.jp/blogs/xxxxxxxx
+```
+
+- `--render` はログイン中のセッション(Cookie)を引き継いだ状態でブラウザを開くので、
+  会員限定記事でもログインしたまま取得できます(`--login-url`と一緒に使った場合)。
+- `--list-url --infinite-scroll` と組み合わせて全件保存する場合も同様に `--render` を追加できますが、
+  1記事ごとに実際にブラウザを起動するため、通常よりかなり時間がかかります。
+- コメント・リアクションを拾うためのCSS選択パターン(`COMMENT_CONTAINER_SELECTORS` /
+  `REACTION_CONTAINER_SELECTORS`)は実際のサイト構造を確認できない状態での推測です。
+  `--render` を付けても `comments.json` / `reactions.json` が空のままの場合は、保存された
+  `article.html`(`--render` 時はJS実行後のHTMLが保存されます)を見せてもらえれば、
+  実際の構造に合わせて調整します。
 
 ## 会員限定記事(ログインが必要な記事)を保存する
 

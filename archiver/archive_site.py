@@ -91,6 +91,25 @@ COMMENT_CONTAINER_SELECTORS = [
     "#disqus_thread",
     ".fb-comments",
     "#fb-comments",
+    # OSIRO系コミュニティサイト(yakyu.bunshun.jp等)向けの推測パターン。
+    # 実際の構造が違う場合は --render で取得した article.html を見ながら調整する。
+    ".chat__list",
+    ".chatList",
+    ".commentList",
+    ".comment_list",
+]
+
+# リアクション(いいね・スタンプ等)らしき要素を探すための候補セレクタ(推測)
+REACTION_CONTAINER_SELECTORS = [
+    ".reaction",
+    ".reactions",
+    ".reactionList",
+    ".reaction_list",
+    ".like",
+    ".likes",
+    ".likeList",
+    ".stamp",
+    ".stampList",
 ]
 
 NAV_TAGS_TO_STRIP = ["nav", "header", "footer", "aside", "script", "style", "form", "noscript"]
@@ -105,6 +124,7 @@ class Article:
     body_html: str = ""
     images: list[str] = field(default_factory=list)
     comments: list[dict] = field(default_factory=list)
+    reactions: list[dict] = field(default_factory=list)
     raw_html: str = ""
 
 
@@ -117,15 +137,17 @@ def slugify(text: str, fallback: str) -> str:
 
 def fetch_html(url: str, session: requests.Session, render: bool = False, timeout: int = 20) -> str:
     if render:
-        return fetch_html_rendered(url)
+        return fetch_html_rendered(url, session=session)
     resp = session.get(url, timeout=timeout)
     resp.raise_for_status()
     resp.encoding = resp.apparent_encoding or resp.encoding
     return resp.text
 
 
-def fetch_html_rendered(url: str) -> str:
-    """Playwright でページを開き、JS 実行後の HTML を取得する(コメント欄が JS 描画の場合用)。"""
+def fetch_html_rendered(url: str, session: requests.Session | None = None) -> str:
+    """Playwright でページを開き、JS 実行後の HTML を取得する(コメント欄・リアクションが
+    JS描画の場合用)。session を渡すと、ログイン済みセッションのCookieを引き継いだ状態で
+    ブラウザを開くため、会員限定ページでも正しくログイン状態のまま取得できる。"""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as e:
@@ -135,9 +157,14 @@ def fetch_html_rendered(url: str) -> str:
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page(user_agent=USER_AGENT)
+        context = browser.new_context(user_agent=USER_AGENT)
+        if session is not None:
+            cookies = session_cookies_for_playwright(session)
+            if cookies:
+                context.add_cookies(cookies)
+        page = context.new_page()
         page.goto(url, wait_until="networkidle", timeout=30000)
-        # 遅延読み込み画像・コメントウィジェットの読み込みを待つため少し待機
+        # 遅延読み込み画像・コメント/リアクションウィジェットの読み込みを待つため少し待機
         page.wait_for_timeout(2000)
         html = page.content()
         browser.close()
@@ -429,6 +456,30 @@ def extract_comments(soup: BeautifulSoup) -> list[dict]:
     return comments
 
 
+def extract_reactions(soup: BeautifulSoup) -> list[dict]:
+    """いいね・スタンプなどのリアクション情報を推測して拾う。
+    構造が想定と異なりうまく取れない場合は REACTION_CONTAINER_SELECTORS を
+    実際のサイトのHTMLに合わせて調整する。"""
+    reactions = []
+    for selector in REACTION_CONTAINER_SELECTORS:
+        container = soup.select_one(selector)
+        if not container:
+            continue
+        items = container.select("li, .reaction-item, span, button")
+        if not items:
+            text = container.get_text(" ", strip=True)
+            if text:
+                reactions.append({"text": text})
+            continue
+        for item in items:
+            text = item.get_text(" ", strip=True)
+            if text:
+                reactions.append({"text": text})
+        if reactions:
+            break
+    return reactions
+
+
 def download_images(content_el, base_url: str, out_dir: Path, session: requests.Session, delay: float) -> None:
     img_dir = out_dir / "images"
     for i, img in enumerate(content_el.find_all("img")):
@@ -463,12 +514,14 @@ def parse_article(url: str, html: str) -> Article:
     content_el = pick_content_element(BeautifulSoup(html, "html.parser"))
     content_el = clean_content(content_el)
     comments = extract_comments(soup)
+    reactions = extract_reactions(soup)
     return Article(
         url=url,
         title=title,
         date=date,
         body_html=str(content_el),
         comments=comments,
+        reactions=reactions,
         raw_html=html,
     )
 
@@ -497,6 +550,9 @@ def save_article(article: Article, out_root: Path, session: requests.Session, de
     (out_dir / "article.html").write_text(article.raw_html, encoding="utf-8")
     (out_dir / "comments.json").write_text(
         json.dumps(article.comments, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (out_dir / "reactions.json").write_text(
+        json.dumps(article.reactions, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return out_dir
 
@@ -562,9 +618,10 @@ def archive_one(url: str, out_root: Path, session: requests.Session, index: dict
         "dir": str(out_dir.relative_to(out_root)),
         "archived_at": datetime.now().isoformat(timespec="seconds"),
         "comments_count": len(article.comments),
+        "reactions_count": len(article.reactions),
     }
     save_index(out_root, index)
-    print(f"  → 保存先: {out_dir} (コメント {len(article.comments)} 件)")
+    print(f"  → 保存先: {out_dir} (コメント {len(article.comments)} 件 / リアクション {len(article.reactions)} 件)")
     time.sleep(args.delay)
 
 
