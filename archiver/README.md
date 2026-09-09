@@ -96,6 +96,24 @@ python archive_site.py --login-url https://yakyu.bunshun.jp/login \
 - ログイン後のページに再びログインフォームが検出された場合は失敗とみなし、処理を中断します。
 - 認証情報や取得した会員限定記事は、自分の契約範囲内での個人利用にとどめ、共有・再配布しないでください。
 
+### ログインボタンを押してもログインできない(JavaScriptでログイン処理している)場合
+
+サイトによっては、ログインフォームの送信処理がVue.jsやReactなどのJavaScriptで実装されており、
+単純にフォームの内容をそのままPOST送信するだけではログインできないことがあります
+(送信ボタンを押すとJavaScript側で別のAPIにリクエストを送るなど、フォームのHTML構造だけでは
+再現できない処理が行われているケース)。
+
+この場合は `--browser-login` を付けてください。実際にヘッドレスブラウザでフォームに入力し、
+送信ボタンをクリックすることでログインします(要 Playwright)。
+
+```bash
+python archive_site.py --login-url https://yakyu.bunshun.jp/login --browser-login \
+    --list-url https://yakyu.bunshun.jp/blogs --infinite-scroll
+```
+
+- 保存された記事の本文が「ログイン」という案内ページの内容になってしまっている場合は、
+  ほぼこのパターンです。`--browser-login` を試してください。
+
 ## うまく本文/画像/コメントが取れないとき
 
 サイトのHTML構造が事前に確認できない状態で作っているため、抽出ロジックは

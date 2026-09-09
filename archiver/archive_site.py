@@ -232,6 +232,63 @@ def get_credentials(args) -> tuple[str, str]:
     return username, password
 
 
+def browser_login(
+    login_url: str, username: str, password: str,
+    username_field: str | None, password_field: str | None,
+) -> tuple[list[dict], bool, str]:
+    """Vue/Reactなど、ログインボタンの送信処理がJavaScriptで実装されているサイト向けに、
+    実際にヘッドレスブラウザでフォームへ入力・送信ボタンをクリックしてログインする。
+    戻り値は (取得したCookie一覧, ログイン成功と思われるか, 最終的なページURL)。"""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        raise SystemExit(
+            "--browser-login を使うには playwright が必要です: "
+            "pip install playwright && playwright install chromium"
+        ) from e
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        context = browser.new_context(user_agent=USER_AGENT)
+        page = context.new_page()
+        page.goto(login_url, wait_until="networkidle", timeout=30000)
+
+        pw_selector = f'input[name="{password_field}"]' if password_field else 'input[type="password"]'
+        pw_locator = page.locator(pw_selector).first
+        pw_locator.wait_for(timeout=10000)
+
+        if username_field:
+            user_selector = f'input[name="{username_field}"]'
+        elif page.locator('input[type="email"]').count() > 0:
+            user_selector = 'input[type="email"]'
+        else:
+            user_selector = 'input[type="text"]'
+        page.locator(user_selector).first.fill(username)
+        pw_locator.fill(password)
+
+        submit_button = page.locator('button[type="submit"], input[type="submit"]').first
+        submit_button.click()
+
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+        page.wait_for_timeout(1500)
+
+        final_url = page.url
+        still_has_password = page.locator('input[type="password"]').count() > 0
+        cookies = context.cookies()
+        browser.close()
+
+    success = not still_has_password
+    return cookies, success, final_url
+
+
+def apply_cookies_to_session(session: requests.Session, cookies: list[dict]) -> None:
+    for c in cookies:
+        session.cookies.set(c["name"], c["value"], domain=c.get("domain") or "", path=c.get("path") or "/")
+
+
 def detect_login_form(soup: BeautifulSoup, username_field: str | None, password_field: str | None):
     """type=password の <input> を含む <form> をログインフォームとみなして返す。"""
     for form in soup.find_all("form"):
@@ -528,6 +585,9 @@ def main() -> None:
                                             "コマンド履歴に残るため指定は非推奨)")
     parser.add_argument("--username-field", help="ログインフォームのユーザーID欄のname属性(自動検出できない場合に指定)")
     parser.add_argument("--password-field", help="ログインフォームのパスワード欄のname属性(自動検出できない場合に指定)")
+    parser.add_argument("--browser-login", action="store_true",
+                         help="ログインフォームの送信処理がJavaScriptで実装されているサイト向けに、"
+                              "Playwrightで実際にブラウザ操作してログインする(単純なPOST送信でログインできない場合に指定)")
     parser.add_argument("--infinite-scroll", action="store_true",
                          help="一覧ページがボタン無し・URL変化無しのスクロールで追加読み込みされる場合に指定"
                               "(Playwrightで実際にスクロールして記事リンクを集める)")
@@ -548,7 +608,17 @@ def main() -> None:
 
     if args.login_url:
         username, password = get_credentials(args)
-        if not login(session, args.login_url, username, password, args.username_field, args.password_field):
+        if args.browser_login:
+            cookies, ok, final_url = browser_login(
+                args.login_url, username, password, args.username_field, args.password_field
+            )
+            if not ok:
+                print(f"[中断] ブラウザ経由のログインに失敗した可能性があります(遷移後URL: {final_url})。"
+                      "ID/パスワードをご確認ください。", file=sys.stderr)
+                sys.exit(1)
+            apply_cookies_to_session(session, cookies)
+            print(f"[ログイン成功と思われます] ブラウザ経由でログインしました(遷移後URL: {final_url})")
+        elif not login(session, args.login_url, username, password, args.username_field, args.password_field):
             print("[中断] ログインに失敗した可能性があるため処理を中止します。"
                   "--force で無視して続行することはできません。フォーム構造をご確認ください。", file=sys.stderr)
             sys.exit(1)
