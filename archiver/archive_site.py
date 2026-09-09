@@ -451,11 +451,28 @@ def extract_date(soup: BeautifulSoup) -> str:
 
 def extract_comments(soup: BeautifulSoup) -> list[dict]:
     comments = []
+    # yakyu.bunshun.jp(OSIRO系)の実際の構造: #chatWrapper 内の各 .message が1コメント
+    messages = soup.select("#chatWrapper .message")
+    if messages:
+        for msg in messages:
+            author_el = msg.select_one(".chat__userName__name")
+            time_el = msg.select_one(".chat__posted")
+            text_el = msg.select_one(".chat__commentText")
+            text = text_el.get_text(" ", strip=True) if text_el else msg.get_text(" ", strip=True)
+            if text:
+                comments.append({
+                    "author": author_el.get_text(strip=True) if author_el else "",
+                    "date": time_el.get_text(strip=True) if time_el else "",
+                    "text": text,
+                })
+        if comments:
+            return comments
+
+    # フォールバック(構造不明なサイト向けの汎用パターン)
     for selector in COMMENT_CONTAINER_SELECTORS:
         container = soup.select_one(selector)
         if not container:
             continue
-        # よくあるコメント1件ぶんの構造を推測して拾う
         items = container.select("li, .comment, .comment-body, article")
         if not items:
             text = container.get_text(strip=True)
@@ -472,10 +489,29 @@ def extract_comments(soup: BeautifulSoup) -> list[dict]:
 
 
 def extract_reactions(soup: BeautifulSoup) -> list[dict]:
-    """いいね・スタンプなどのリアクション情報を推測して拾う。
-    構造が想定と異なりうまく取れない場合は REACTION_CONTAINER_SELECTORS を
-    実際のサイトのHTMLに合わせて調整する。"""
+    """いいね・スタンプなどのリアクション情報を拾う。"""
     reactions = []
+    # yakyu.bunshun.jp(OSIRO系)の実際の構造: a.action__reaction が実際に押された
+    # リアクション(未使用のクイックリアクション候補は a.action__oneclick_reaction で
+    # カウント0のため除外される)
+    for link in soup.select(".articleActions__reaction a.action__reaction"):
+        count_el = link.select_one(".action__count")
+        if not count_el:
+            continue
+        count = count_el.get_text(strip=True)
+        emoji_el = link.select_one(".action__emoji")
+        custom_el = link.select_one(".action__custom_emoji")
+        if emoji_el:
+            emoji = emoji_el.get_text(strip=True)
+        elif custom_el is not None:
+            emoji = custom_el.get("alt") or custom_el.get("src", "")
+        else:
+            emoji = ""
+        reactions.append({"emoji": emoji, "count": count})
+    if reactions:
+        return reactions
+
+    # フォールバック(構造不明なサイト向けの汎用パターン)
     for selector in REACTION_CONTAINER_SELECTORS:
         container = soup.select_one(selector)
         if not container:
