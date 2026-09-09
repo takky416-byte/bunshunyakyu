@@ -47,6 +47,22 @@ python archive_site.py --list-url https://yakyu.bunshun.jp/ --max-pages 50
 python archive_site.py --url https://yakyu.bunshun.jp/blogs/af9f98c6821b --render
 ```
 
+### 一覧ページが「無限スクロール」方式の場合
+
+ページ番号リンクや「もっと見る」ボタンが無く、スクロールするだけで記事が
+自動的に追加読み込みされるタイプの一覧ページには `--infinite-scroll` を使います
+(要 Playwright。上のセットアップ手順でインストールしてください)。
+
+```bash
+python archive_site.py --list-url https://yakyu.bunshun.jp/blogs --infinite-scroll
+```
+
+- ブラウザを裏側で実際に動かして一番下までスクロールを繰り返し、記事リンクが
+  3回連続で増えなくなった時点で「読み込み完了」とみなします。
+- 読み込みに時間がかかるサイトでは `--scroll-pause-ms 3000` のように待ち時間を延ばしてください。
+- 通常のページネーション(`--max-pages` / 「次へ」リンクを辿る方式)とは併用しません。
+  `--infinite-scroll` を指定した場合はこちらが優先されます。
+
 ## 出力
 
 ```

@@ -9,6 +9,10 @@ yakyu.bunshun.jp のブログ記事を個人アーカイブ用にローカル保
     # 一覧ページを起点にページネーションを辿って全記事を保存
     python archive_site.py --list-url https://yakyu.bunshun.jp/ --max-pages 20
 
+    # 一覧ページがボタン無しの無限スクロール方式で追加読み込みされる場合
+    # (Playwrightが必要: pip install playwright && playwright install chromium)
+    python archive_site.py --list-url https://yakyu.bunshun.jp/blogs --infinite-scroll
+
     # JS で描画されるコメント(Disqus / Facebookコメント等)も取りたい場合
     python archive_site.py --url https://yakyu.bunshun.jp/blogs/af9f98c6821b --render
 
@@ -135,6 +139,82 @@ def fetch_html_rendered(url: str) -> str:
         page.goto(url, wait_until="networkidle", timeout=30000)
         # 遅延読み込み画像・コメントウィジェットの読み込みを待つため少し待機
         page.wait_for_timeout(2000)
+        html = page.content()
+        browser.close()
+        return html
+
+
+def session_cookies_for_playwright(session: requests.Session) -> list[dict]:
+    cookies = []
+    for c in session.cookies:
+        if not c.domain:
+            continue
+        cookies.append({
+            "name": c.name,
+            "value": c.value,
+            "domain": c.domain,
+            "path": c.path or "/",
+        })
+    return cookies
+
+
+def count_matching_links(html: str, base_url: str, pattern: re.Pattern) -> int:
+    soup = BeautifulSoup(html, "html.parser")
+    count = 0
+    for a in soup.find_all("a", href=True):
+        abs_url = urljoin(base_url, a["href"])
+        if urlparse(abs_url).netloc == urlparse(base_url).netloc and pattern.search(urlparse(abs_url).path):
+            count += 1
+    return count
+
+
+def fetch_list_html_infinite_scroll(
+    url: str,
+    link_pattern: str | None,
+    max_scrolls: int,
+    scroll_pause_ms: int,
+    session: requests.Session | None = None,
+) -> str:
+    """無限スクロール(ボタンなし・URLも変わらず、スクロールで追加読み込みされる)方式の
+    一覧ページを、実際にブラウザでスクロールさせながら記事リンクが増えなくなるまで読み込む。"""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        raise SystemExit(
+            "--infinite-scroll を使うには playwright が必要です: "
+            "pip install playwright && playwright install chromium"
+        ) from e
+
+    pattern = re.compile(link_pattern) if link_pattern else re.compile(r"/blogs/[0-9a-f]{8,}")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        context = browser.new_context(user_agent=USER_AGENT)
+        if session is not None:
+            cookies = session_cookies_for_playwright(session)
+            if cookies:
+                context.add_cookies(cookies)
+        page = context.new_page()
+        page.goto(url, wait_until="networkidle", timeout=30000)
+        page.wait_for_timeout(1000)
+
+        last_count = count_matching_links(page.content(), url, pattern)
+        print(f"  現在 {last_count} 件のリンクを検出(スクロールして追加読み込みします)")
+        stable_rounds = 0
+        for i in range(max_scrolls):
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(scroll_pause_ms)
+            new_count = count_matching_links(page.content(), url, pattern)
+            if new_count > last_count:
+                print(f"  スクロール {i + 1}回目: {new_count} 件に増加")
+                last_count = new_count
+                stable_rounds = 0
+            else:
+                stable_rounds += 1
+                if stable_rounds >= 3:
+                    print(f"  3回連続で増加なし。読み込み完了とみなします(合計 {last_count} 件)")
+                    break
+
         html = page.content()
         browser.close()
         return html
@@ -448,6 +528,12 @@ def main() -> None:
                                             "コマンド履歴に残るため指定は非推奨)")
     parser.add_argument("--username-field", help="ログインフォームのユーザーID欄のname属性(自動検出できない場合に指定)")
     parser.add_argument("--password-field", help="ログインフォームのパスワード欄のname属性(自動検出できない場合に指定)")
+    parser.add_argument("--infinite-scroll", action="store_true",
+                         help="一覧ページがボタン無し・URL変化無しのスクロールで追加読み込みされる場合に指定"
+                              "(Playwrightで実際にスクロールして記事リンクを集める)")
+    parser.add_argument("--max-scrolls", type=int, default=50, help="--infinite-scroll 使用時の最大スクロール回数")
+    parser.add_argument("--scroll-pause-ms", type=int, default=1500,
+                         help="--infinite-scroll 使用時、1回のスクロール後に読み込みを待つ時間(ミリ秒)")
     args = parser.parse_args()
 
     if not args.url and not args.list_url:
@@ -471,9 +557,25 @@ def main() -> None:
         archive_one(args.url, out_root, session, index, args)
         return
 
-    # --list-url モード: ページネーションを辿って記事リンクを収集しつつ都度保存
-    page_url = args.list_url
     saved_count = 0
+
+    if args.infinite_scroll:
+        # 無限スクロール方式: ブラウザで実際にスクロールしながら記事リンクを集める
+        print(f"[無限スクロール取得] {args.list_url}")
+        list_html = fetch_list_html_infinite_scroll(
+            args.list_url, args.link_pattern, args.max_scrolls, args.scroll_pause_ms, session=session
+        )
+        links = discover_article_links(list_html, args.list_url, args.link_pattern)
+        print(f"  記事リンク {len(links)} 件見つかりました")
+        for link in links:
+            if args.max_articles and saved_count >= args.max_articles:
+                break
+            archive_one(link, out_root, session, index, args)
+            saved_count += 1
+        return
+
+    # --list-url モード(通常のページネーション): 「次へ」リンクを辿って記事リンクを収集しつつ都度保存
+    page_url = args.list_url
     for page_num in range(1, args.max_pages + 1):
         print(f"[一覧ページ {page_num}] {page_url}")
         try:
