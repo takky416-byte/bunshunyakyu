@@ -1,0 +1,7 @@
+requests>=2.31
+beautifulsoup4>=4.12
+markdownify>=0.11
+
+# --render オプション(JS描画後のHTMLを取得したい場合)を使うときだけ必要:
+# pip install playwright
+# playwright install chromium
