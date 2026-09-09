@@ -16,6 +16,11 @@ yakyu.bunshun.jp のブログ記事を個人アーカイブ用にローカル保
     # JS で描画されるコメント(Disqus / Facebookコメント等)も取りたい場合
     python archive_site.py --url https://yakyu.bunshun.jp/blogs/af9f98c6821b --render
 
+    # 差分取得(2回目以降、新規記事・コメント/リアクションが更新された記事だけ取得)
+    python archive_site.py --login-url https://yakyu.bunshun.jp/login --browser-login --render \
+        --list-url "https://yakyu.bunshun.jp/blogs?order_type=comment_update_desc" \
+        --infinite-scroll --update
+
     # 会員限定記事の場合(先にログインしてからセッションを使って取得)
     export BUNSHUN_USERNAME="your_id"
     export BUNSHUN_PASSWORD="your_password"   # 未設定なら実行時にプロンプトで入力
@@ -683,6 +688,71 @@ def archive_one(url: str, out_root: Path, session: requests.Session, index: dict
     time.sleep(args.delay)
 
 
+def run_update_mode(args, session: requests.Session, out_root: Path, index: dict) -> None:
+    """差分取得モード: 「更新順」(例: order_type=comment_update_desc)の一覧を
+    上から順に実際に確認し、新規記事か、前回よりコメント/リアクション数が
+    変わっている記事だけを保存する。一定件数連続で変化がなければ、それより下は
+    既に最新の状態のはずとみなして巡回を打ち切る。"""
+    print(f"[差分チェック] {args.list_url}(更新順の一覧と想定)")
+    if args.infinite_scroll:
+        list_html = fetch_list_html_infinite_scroll(
+            args.list_url, args.link_pattern, args.max_scrolls, args.scroll_pause_ms, session=session
+        )
+    else:
+        list_html = fetch_html(args.list_url, session, render=args.render)
+    links = discover_article_links(list_html, args.list_url, args.link_pattern)
+    print(f"  一覧から {len(links)} 件のリンクを検出しました")
+
+    unchanged_streak = 0
+    checked = 0
+    updated = 0
+    for link in links:
+        if args.max_articles and checked >= args.max_articles:
+            print(f"[中断] --max-articles の上限({args.max_articles}件)に達しました")
+            break
+        checked += 1
+        print(f"[確認中 {checked}/{len(links)}] {link}")
+        try:
+            html = fetch_html(link, session, render=args.render)
+        except requests.RequestException as e:
+            print(f"  [エラー] 取得失敗: {e}", file=sys.stderr)
+            continue
+
+        article = parse_article(link, html)
+        prev = index.get(link)
+        is_new = prev is None
+        changed = is_new or (
+            prev.get("comments_count") != len(article.comments)
+            or prev.get("reactions_count") != len(article.reactions)
+        )
+
+        if changed:
+            out_dir = save_article(article, out_root, session, args.delay)
+            index[link] = {
+                "title": article.title,
+                "date": article.date,
+                "dir": str(out_dir.relative_to(out_root)),
+                "archived_at": datetime.now().isoformat(timespec="seconds"),
+                "comments_count": len(article.comments),
+                "reactions_count": len(article.reactions),
+            }
+            save_index(out_root, index)
+            reason = "新規記事" if is_new else "コメント/リアクションが更新"
+            print(f"  → 保存しました({reason}): {out_dir}")
+            updated += 1
+            unchanged_streak = 0
+        else:
+            print("  変化なし(スキップ)")
+            unchanged_streak += 1
+            if unchanged_streak >= args.update_stop_after:
+                print(f"  {unchanged_streak}件連続で変化なしのため、ここで打ち切ります"
+                      f"(それより下の記事は既に最新の状態のはずです)")
+                break
+        time.sleep(args.delay)
+
+    print(f"[差分チェック完了] 確認 {checked} 件 / 新規・更新保存 {updated} 件")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--url", help="単一記事のURL")
@@ -709,10 +779,19 @@ def main() -> None:
     parser.add_argument("--max-scrolls", type=int, default=500, help="--infinite-scroll 使用時の最大スクロール回数")
     parser.add_argument("--scroll-pause-ms", type=int, default=1500,
                          help="--infinite-scroll 使用時、1回のスクロール後に読み込みを待つ時間(ミリ秒)")
+    parser.add_argument("--update", action="store_true",
+                         help="差分取得モード。--list-url を「更新順」の一覧URL"
+                              "(例: https://yakyu.bunshun.jp/blogs?order_type=comment_update_desc)にして使う。"
+                              "上から順に確認し、新規記事か前回よりコメント/リアクション数が変わった記事だけを保存、"
+                              "--update-stop-after 件連続で変化なしなら打ち切る")
+    parser.add_argument("--update-stop-after", type=int, default=5,
+                         help="--update 使用時、何件連続で変化なしだったら打ち切るか(デフォルト5)")
     args = parser.parse_args()
 
     if not args.url and not args.list_url:
         parser.error("--url か --list-url のどちらかを指定してください")
+    if args.update and not args.list_url:
+        parser.error("--update を使う場合は --list-url も指定してください")
 
     out_root = Path(args.out)
     out_root.mkdir(parents=True, exist_ok=True)
@@ -740,6 +819,10 @@ def main() -> None:
 
     if args.url:
         archive_one(args.url, out_root, session, index, args)
+        return
+
+    if args.update:
+        run_update_mode(args, session, out_root, index)
         return
 
     saved_count = 0

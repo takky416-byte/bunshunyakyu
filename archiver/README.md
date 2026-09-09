@@ -63,6 +63,31 @@ python archive_site.py --list-url https://yakyu.bunshun.jp/blogs --infinite-scro
 - 通常のページネーション(`--max-pages` / 「次へ」リンクを辿る方式)とは併用しません。
   `--infinite-scroll` を指定した場合はこちらが優先されます。
 
+## 差分取得(2回目以降、新規・更新分だけ取得する)
+
+最初に `--infinite-scroll` で全件取得したあとは、2回目以降は `--update` を使うと、
+毎回全件をスクロールし直さずに、**新規記事**と**コメント/リアクション数が前回から
+変わった記事**だけを確認・保存できます。
+
+yakyu.bunshun.jp の `/blogs` には「更新順(コメントが新しい順)」の並び替えがあり、
+そのURLは以下のようになります(サイト上で並び替えを選択した時のURLを使ってください)。
+
+```bash
+python archive_site.py --login-url https://yakyu.bunshun.jp/login --browser-login --render \
+    --list-url "https://yakyu.bunshun.jp/blogs?order_type=comment_update_desc" \
+    --infinite-scroll --update
+```
+
+仕組み:
+
+- 「更新順」の一覧を上から順に実際に開いていき、`archive/index.json` に記録された
+  前回の保存内容(コメント数・リアクション数)と比較します。
+- 新規記事、またはコメント/リアクション数が変わっている記事だけを保存し直します。
+- 変化なしの記事が既定で**5件連続**続いたら、それより下は既に最新のはずとみなして
+  そこで巡回を打ち切ります(`--update-stop-after` で件数を変更可能)。
+- 本文そのものが編集された(コメント/リアクション数は変わっていない)場合は、
+  現状検知できません。あくまでコメント・リアクションの新着を追う仕組みです。
+
 ## 出力
 
 ```
