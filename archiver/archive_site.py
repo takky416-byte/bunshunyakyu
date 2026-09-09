@@ -245,6 +245,10 @@ def fetch_list_html_infinite_scroll(
                 if stable_rounds >= 3:
                     print(f"  3回連続で増加なし。読み込み完了とみなします(合計 {last_count} 件)")
                     break
+        else:
+            print(f"  [警告] --max-scrolls の上限({max_scrolls}回)に達したため停止しました。"
+                  f"直前まで記事が増え続けていた場合、まだ読み込みきれていない記事がある可能性があります。"
+                  f"--max-scrolls をもっと大きい値(例: 500)にして再実行することをおすすめします。")
 
         html = page.content()
         browser.close()
@@ -654,7 +658,7 @@ def main() -> None:
     parser.add_argument("--infinite-scroll", action="store_true",
                          help="一覧ページがボタン無し・URL変化無しのスクロールで追加読み込みされる場合に指定"
                               "(Playwrightで実際にスクロールして記事リンクを集める)")
-    parser.add_argument("--max-scrolls", type=int, default=50, help="--infinite-scroll 使用時の最大スクロール回数")
+    parser.add_argument("--max-scrolls", type=int, default=500, help="--infinite-scroll 使用時の最大スクロール回数")
     parser.add_argument("--scroll-pause-ms", type=int, default=1500,
                          help="--infinite-scroll 使用時、1回のスクロール後に読み込みを待つ時間(ミリ秒)")
     args = parser.parse_args()
