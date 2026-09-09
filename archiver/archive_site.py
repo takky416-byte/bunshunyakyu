@@ -542,6 +542,9 @@ def parse_article(url: str, html: str) -> Article:
 
 
 def save_article(article: Article, out_root: Path, session: requests.Session, delay: float) -> Path:
+    if not article.date:
+        print(f"  [警告] 投稿日を取得できなかったため、取得日の日付でフォルダ分けします: {article.url}",
+              file=sys.stderr)
     date_part = article.date or datetime.now().strftime("%Y-%m-%d")
     m = re.match(r"(\d{4})-(\d{2})", date_part)
     year, month = m.groups() if m else datetime.now().strftime("%Y-%m").split("-")
