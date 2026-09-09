@@ -12,6 +12,12 @@ yakyu.bunshun.jp のブログ記事を個人アーカイブ用にローカル保
     # JS で描画されるコメント(Disqus / Facebookコメント等)も取りたい場合
     python archive_site.py --url https://yakyu.bunshun.jp/blogs/af9f98c6821b --render
 
+    # 会員限定記事の場合(先にログインしてからセッションを使って取得)
+    export BUNSHUN_USERNAME="your_id"
+    export BUNSHUN_PASSWORD="your_password"   # 未設定なら実行時にプロンプトで入力
+    python archive_site.py --login-url https://yakyu.bunshun.jp/login \
+        --url https://yakyu.bunshun.jp/blogs/af9f98c6821b
+
 必要ライブラリ:
     pip install -r requirements.txt
     (--render を使う場合は追加で `pip install playwright && playwright install chromium`)
@@ -32,7 +38,9 @@ yakyu.bunshun.jp のブログ記事を個人アーカイブ用にローカル保
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
+import os
 import re
 import sys
 import time
@@ -130,6 +138,97 @@ def fetch_html_rendered(url: str) -> str:
         html = page.content()
         browser.close()
         return html
+
+
+def get_credentials(args) -> tuple[str, str]:
+    """認証情報をコマンドライン引数 > 環境変数 > 対話入力 の優先順位で取得する。
+    パスワードをコマンド履歴に残さないため、コマンドライン引数での指定は推奨しない。"""
+    username = args.username or os.environ.get("BUNSHUN_USERNAME")
+    password = args.password or os.environ.get("BUNSHUN_PASSWORD")
+    if not username:
+        username = input("ユーザーID/メールアドレス: ").strip()
+    if not password:
+        password = getpass.getpass("パスワード: ")
+    return username, password
+
+
+def detect_login_form(soup: BeautifulSoup, username_field: str | None, password_field: str | None):
+    """type=password の <input> を含む <form> をログインフォームとみなして返す。"""
+    for form in soup.find_all("form"):
+        pw_input = form.find("input", attrs={"type": "password"})
+        if password_field:
+            pw_input = form.find("input", attrs={"name": password_field}) or pw_input
+        if pw_input:
+            return form, pw_input
+    return None, None
+
+
+def guess_username_field_name(form) -> str | None:
+    candidates_attrs = ["name", "id"]
+    candidate_keywords = ["email", "mail", "login", "user", "account", "id"]
+    for inp in form.find_all("input"):
+        itype = (inp.get("type") or "text").lower()
+        if itype in {"password", "hidden", "submit", "checkbox", "radio"}:
+            continue
+        for attr in candidates_attrs:
+            val = (inp.get(attr) or "").lower()
+            if any(kw in val for kw in candidate_keywords):
+                return inp.get("name")
+    # フォールバック: password 以外の最初のテキスト系 input
+    for inp in form.find_all("input"):
+        itype = (inp.get("type") or "text").lower()
+        if itype in {"text", "email"}:
+            return inp.get("name")
+    return None
+
+
+def login(session: requests.Session, login_url: str, username: str, password: str,
+          username_field: str | None, password_field: str | None) -> bool:
+    resp = session.get(login_url, timeout=20)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    form, pw_input = detect_login_form(soup, username_field, password_field)
+    if not form or not pw_input:
+        print("[エラー] ログインフォームが見つかりませんでした。"
+              "--username-field / --password-field で明示指定してください。", file=sys.stderr)
+        return False
+
+    pw_name = pw_input.get("name")
+    user_name = username_field or guess_username_field_name(form)
+    if not user_name:
+        print("[エラー] ユーザーID欄が見つかりませんでした。--username-field で指定してください。", file=sys.stderr)
+        return False
+
+    payload = {}
+    for inp in form.find_all(["input", "textarea"]):
+        name = inp.get("name")
+        if not name:
+            continue
+        payload[name] = inp.get("value", "")
+    payload[user_name] = username
+    payload[pw_name] = password
+
+    action = form.get("action") or login_url
+    action_url = urljoin(login_url, action)
+    method = (form.get("method") or "post").lower()
+
+    if method == "get":
+        result = session.get(action_url, params=payload, timeout=20)
+    else:
+        result = session.post(action_url, data=payload, timeout=20)
+    result.raise_for_status()
+
+    result_soup = BeautifulSoup(result.text, "html.parser")
+    still_has_login_form, _ = detect_login_form(result_soup, username_field, password_field)
+    if still_has_login_form:
+        print("[警告] ログイン後も再度ログインフォームが検出されました。"
+              "ID/パスワードが誤っているか、フォーム構造の自動検出に失敗している可能性があります。", file=sys.stderr)
+        return False
+
+    print("[ログイン成功と思われます] ログイン後のページにフォームが見当たりませんでした。"
+          "念のため保存された記事が会員限定部分まで含んでいるか確認してください。")
+    return True
 
 
 def pick_content_element(soup: BeautifulSoup):
@@ -343,6 +442,12 @@ def main() -> None:
     parser.add_argument("--delay", type=float, default=1.5, help="リクエスト間隔(秒)")
     parser.add_argument("--render", action="store_true", help="Playwright でJS実行後のHTMLを取得(コメント欄がJS描画の場合)")
     parser.add_argument("--force", action="store_true", help="既に保存済みでも再取得する")
+    parser.add_argument("--login-url", help="会員限定記事を取得する場合のログインページURL")
+    parser.add_argument("--username", help="ログインID(未指定時は環境変数 BUNSHUN_USERNAME か対話入力)")
+    parser.add_argument("--password", help="パスワード(未指定時は環境変数 BUNSHUN_PASSWORD か対話入力。"
+                                            "コマンド履歴に残るため指定は非推奨)")
+    parser.add_argument("--username-field", help="ログインフォームのユーザーID欄のname属性(自動検出できない場合に指定)")
+    parser.add_argument("--password-field", help="ログインフォームのパスワード欄のname属性(自動検出できない場合に指定)")
     args = parser.parse_args()
 
     if not args.url and not args.list_url:
@@ -354,6 +459,13 @@ def main() -> None:
 
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
+
+    if args.login_url:
+        username, password = get_credentials(args)
+        if not login(session, args.login_url, username, password, args.username_field, args.password_field):
+            print("[中断] ログインに失敗した可能性があるため処理を中止します。"
+                  "--force で無視して続行することはできません。フォーム構造をご確認ください。", file=sys.stderr)
+            sys.exit(1)
 
     if args.url:
         archive_one(args.url, out_root, session, index, args)

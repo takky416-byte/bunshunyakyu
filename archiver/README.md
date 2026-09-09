@@ -59,6 +59,27 @@ archive/
     comments.json                  取得できたコメント(取得できない場合は空配列)
 ```
 
+## 会員限定記事(ログインが必要な記事)を保存する
+
+自分のアカウントで正規に閲覧できる会員限定記事を、私的複製の範囲で保存したい場合はログイン機能を使えます。
+
+```bash
+export BUNSHUN_USERNAME="あなたのID"
+export BUNSHUN_PASSWORD="あなたのパスワード"   # 未設定なら実行時にプロンプトで安全に入力できます
+python archive_site.py --login-url https://yakyu.bunshun.jp/login \
+    --url https://yakyu.bunshun.jp/blogs/xxxxxxxx
+```
+
+- ID/パスワードは**コマンドライン引数に直接書かない**でください(シェル履歴に残ります)。
+  環境変数 `BUNSHUN_USERNAME` / `BUNSHUN_PASSWORD` を使うか、両方省略すると実行時に
+  `input()` / `getpass` で安全に入力を求められます。
+- ログインフォームは `<input type="password">` を含む `<form>` を自動検出し、
+  ユーザーID欄はフィールド名に `email` / `login` / `user` / `id` などを含むものを推測して使います。
+  自動検出がうまくいかない場合は `--username-field` / `--password-field` でフォームの
+  `name` 属性を直接指定してください(ブラウザの開発者ツールでログインフォームのHTMLを見れば分かります)。
+- ログイン後のページに再びログインフォームが検出された場合は失敗とみなし、処理を中断します。
+- 認証情報や取得した会員限定記事は、自分の契約範囲内での個人利用にとどめ、共有・再配布しないでください。
+
 ## うまく本文/画像/コメントが取れないとき
 
 サイトのHTML構造が事前に確認できない状態で作っているため、抽出ロジックは
