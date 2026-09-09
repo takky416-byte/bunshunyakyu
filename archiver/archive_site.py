@@ -68,6 +68,10 @@ DEFAULT_OUT_DIR = Path("archive")
 # 本文らしき要素を探すための候補セレクタ(サイト固有の構造が不明なため、
 # よくあるパターンを優先度順に並べている。うまく取れない場合はここを調整する)
 CONTENT_SELECTORS = [
+    # yakyu.bunshun.jp(OSIRO系コミュニティサイト)は本文だけが .articleBody に
+    # 収まっており、著者プロフィールカードやフォローボタン、前後記事リンクといった
+    # 周辺要素を含まない。最優先で試す。
+    ".articleBody",
     "article",
     "main article",
     ".entry-content",
@@ -538,6 +542,8 @@ def save_article(article: Article, out_root: Path, session: requests.Session, de
     download_images(content_soup, article.url, out_dir, session, delay)
 
     markdown_body = html_to_markdown(str(content_soup), heading_style="ATX")
+    if article.title and not markdown_body.lstrip().startswith("#"):
+        markdown_body = f"# {article.title}\n\n{markdown_body}"
     frontmatter = (
         "---\n"
         f"title: {json.dumps(article.title, ensure_ascii=False)}\n"
