@@ -412,16 +412,25 @@ def fill_body(page, blocks: list[dict]) -> None:
         "() => document.querySelectorAll('trix-editor figure[data-trix-attachment]').length"
     )
     print(f"  [診断] 本文入力完了時点のfigure要素数: {fig_count}")
-    # Vue側(content.body、送信される値そのもの)は trix-change イベントを
-    # 契機に同期される。画像アップロード完了のタイミングと、その後の
-    # editor.insertHTML() が発火するイベントのタイミングが前後すると、Vueが
-    # 画像挿入前の古い本文スナップショットを最後に採用してしまい、見た目上は
-    # 画像がDOMに残っているのに送信データには含まれない、という現象が実際に
-    # 発生した。送信前に明示的にtrix-changeイベントを発火させ、今のDOM内容で
-    # Vue側を強制的に再同期させる。
+    # Vue側(content.body、実際に送信される値そのもの)が、見た目のDOM内容と
+    # 食い違うことが実際に確認された(figureはDOM上に残っているのに、送信データ
+    # には含まれない)。合成の trix-change イベントを発火する方法では直らな
+    # かったため、Trixのイベント経由の同期には頼らず、Vueが実際にv-modelで
+    # 監視している隠しinput要素(input[name="body"])に対して、今のTrix
+    # エディタの本当のHTMLを直接セットし、ネイティブの"input"イベントを発火
+    # させることで、Vue側の状態を強制的に上書きする。
     page.evaluate(
-        "() => { const el = document.querySelector('trix-editor');"
-        " if (el) el.dispatchEvent(new Event('trix-change', { bubbles: true })); }"
+        """() => {
+            const editorEl = document.querySelector('trix-editor');
+            const hiddenInput = document.querySelector('input[name="body"]');
+            if (!editorEl || !hiddenInput) return false;
+            const nativeSetter = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype, 'value'
+            ).set;
+            nativeSetter.call(hiddenInput, editorEl.innerHTML);
+            hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
+            return true;
+        }"""
     )
     page.wait_for_timeout(200)
     print(f"  本文入力欄: {selector}({len(blocks)}ブロック)")
