@@ -403,29 +403,48 @@ def set_header_image(page, image_path: str) -> None:
     with page.expect_file_chooser(timeout=5000) as fc_info:
         upload_item.click(force=True)
     fc_info.value.set_files(resolved)
-    page.wait_for_timeout(1000)
     print(f"  ヘッダー画像をアップロードしました: {resolved}")
 
+    # クロップ(トリミング)用canvasが画像を読み込んで初期化されるまで少し待つ。
+    # ここが短いと、croppa側の切り抜き範囲がまだ決まっていない状態で「確定する」を
+    # 押してしまい、アップロードが完了しない(blob:プレビューのまま止まる)ことがある。
+    try:
+        page.wait_for_selector(".croppa-container canvas", state="visible", timeout=5000)
+    except Exception:
+        pass
+    page.wait_for_timeout(2000)
+
+    confirmed = False
     try:
         btn = page.locator(HEADER_IMAGE_CROP_CONFIRM_SELECTOR).first
         btn.wait_for(state="visible", timeout=3000)
         btn.click(force=True)
         print(f"  トリミング確認ダイアログを確定しました({HEADER_IMAGE_CROP_CONFIRM_SELECTOR})")
-        page.wait_for_timeout(500)
-        return
+        confirmed = True
     except Exception:
-        pass
+        for text in HEADER_IMAGE_CROP_CONFIRM_TEXT_FALLBACK:
+            try:
+                btn = page.get_by_text(text, exact=False).first
+                btn.wait_for(state="visible", timeout=2000)
+                btn.click(force=True)
+                print(f"  トリミング確認ダイアログを確定しました({text})")
+                confirmed = True
+                break
+            except Exception:
+                continue
 
-    for text in HEADER_IMAGE_CROP_CONFIRM_TEXT_FALLBACK:
+    if confirmed:
         try:
-            btn = page.get_by_text(text, exact=False).first
-            btn.wait_for(state="visible", timeout=2000)
-            btn.click(force=True)
-            print(f"  トリミング確認ダイアログを確定しました({text})")
-            page.wait_for_timeout(500)
-            return
+            page.wait_for_function(
+                "() => document.querySelectorAll('img[src^=\"blob:\"]').length === 0",
+                timeout=45000,
+            )
+            print("  ヘッダー画像のアップロード完了を確認しました。")
         except Exception:
-            continue
+            print("  [警告] トリミング確定後もヘッダー画像のアップロードが完了しません"
+                  "でした。このまま送信すると失敗する可能性があります。", file=sys.stderr)
+        return
+
     print("  [警告] トリミング確認ダイアログの確定ボタンが見つかりませんでした"
           "(そもそも出ていない可能性もあります)。ヘッダー画像が正しく設定されたか、"
           "投稿完了後に手動でご確認ください。HEADER_IMAGE_CROP_CONFIRM_SELECTOR を実際の"
