@@ -62,14 +62,13 @@ force=True(重なりチェックを無視して強制的にクリック)で行�
 
         > この記事は生成AIを活用して執筆しています。
 
-    太字/斜体/下線は Ctrl+B・Ctrl+I・Ctrl+U のショートカットを使って切り替えながら
-    実際にキー入力し、引用はTrixツールバーの「引用」ボタンを押した状態で入力する
-    ことで反映しています(editor.insertHTML() のようにJS側からTrix/Vueの内部状態を
-    直接書き換える方式は、見た目上は正しく反映されても、その後の送信がエラーも
-    出さず効かなくなる現象が実際の動作確認で判明したため、本物のキー入力に近い
-    方式に統一しています)。本文中への画像挿入は、実際にファイルをドラッグ&
-    ドロップしたのと同じ DragEvent(dragenter→dragover→drop)を発火させる
-    ことで行っています。
+    太字/斜体/下線/引用は、Trix本体のJS API editor.insertHTML() で、あらかじめ
+    組み立てた(<strong>/<em>/<u>/<blockquote>の)HTMLを段落単位で一括挿入する
+    ことで反映しています(Ctrl+B/Ctrl+I/Ctrl+Uをトグルしながら実際にキー入力する
+    方式も試しましたが、Trixの内部状態への反映タイミングと合わず、文字の欠落・
+    移動や書式の混線が実際に発生したため、この方式に統一しています)。本文中への
+    画像挿入は、実際にファイルをドラッグ&ドロップしたのと同じ DragEvent
+    (dragenter→dragover→drop)を発火させることで行っています。
 
     本文とは別に、記事の一番上に出る「ヘッダー画像(アイキャッチ/サムネイル)」は
     --header-image で指定してください。
@@ -83,6 +82,7 @@ import os
 import re
 import sys
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
 DEFAULT_LOGIN_URL = "https://yakyu.bunshun.jp/login"
@@ -283,52 +283,51 @@ def fill_title(page, title: str) -> None:
     print(f"  タイトル入力欄: {selector}")
 
 
-QUOTE_TOOLBAR_BUTTON_SELECTOR = 'button[data-trix-attribute="quote"]'
+TRIX_INSERT_HTML_JS = """
+([html]) => {
+    const el = document.querySelector('trix-editor');
+    if (!el || !el.editor) return false;
+    el.editor.insertHTML(html);
+    return true;
+}
+"""
 
 
-def type_run(page, text: str, bold: bool, italic: bool, underline: bool) -> None:
-    """1つのテキスト区間を、必要ならCtrl+B / Ctrl+I / Ctrl+Uでトグルしながら
-    実際にキー入力する。editor.insertHTML() など、JS側からTrix/Vueの内部状態を
-    直接いじる方式は、見た目上は正しく反映されるにもかかわらず、その後の送信が
-    (エラーも出さず)効かなくなる現象が実際の動作確認で判明したため、本物の
-    キー入力に近い方式に統一している。"""
-    if bold:
-        page.keyboard.press("Control+b")
-    if italic:
-        page.keyboard.press("Control+i")
+def render_run_html(text: str, bold: bool, italic: bool, underline: bool) -> str:
+    """1つのテキスト区間を、実際のTrix出力(<strong><em><u>...)と同じ入れ子順で
+    HTML化する。"""
+    html = escape(text)
     if underline:
-        page.keyboard.press("Control+u")
-    if bold or italic or underline:
-        # Ctrl+B/I/UでトグルしたTrixの属性がタイプ開始前に反映されるよう少し待つ
-        # (反映前に打ち始めると、先頭の1文字だけ書式が抜けたり位置がずれることがある)。
-        page.wait_for_timeout(30)
-    page.keyboard.type(text, delay=5)
-    if underline:
-        page.keyboard.press("Control+u")
+        html = f"<u>{html}</u>"
     if italic:
-        page.keyboard.press("Control+i")
+        html = f"<em>{html}</em>"
     if bold:
-        page.keyboard.press("Control+b")
+        html = f"<strong>{html}</strong>"
+    return html
 
 
-def type_block(page, block: dict) -> None:
-    """1つの段落ブロックを、必要なら引用(quote)のツールバーボタンを押した状態で
-    キー入力する。引用にはCtrl+*のようなキーボードショートカットが無いため、
-    Trixのツールバーの「引用」ボタンをオン/オフで挟む。"""
-    quote = block.get("quote", False)
-    if quote:
-        try:
-            page.locator(QUOTE_TOOLBAR_BUTTON_SELECTOR).first.click(force=True, timeout=2000)
-        except Exception:
-            print("  [警告] 引用(quote)ボタンが見つからず、引用として反映"
-                  "できなかった可能性があります。", file=sys.stderr)
-    for run_text, bold, italic, underline in block["runs"]:
-        type_run(page, run_text, bold, italic, underline)
-    if quote:
-        try:
-            page.locator(QUOTE_TOOLBAR_BUTTON_SELECTOR).first.click(force=True, timeout=2000)
-        except Exception:
-            pass
+def render_block_html(block: dict) -> str:
+    inner = "".join(render_run_html(t, b, i, u) for t, b, i, u in block["runs"])
+    if block.get("quote"):
+        return f"<blockquote>{inner}</blockquote>"
+    return inner
+
+
+def insert_text_block(page, block: dict) -> None:
+    """1つの段落ブロックを、Trix本体のJS API editor.insertHTML() で挿入する。
+    Ctrl+B/Ctrl+I/Ctrl+Uをトグルしながら実際にキー入力する方式は、Trixの内部状態
+    への反映タイミングと合わずに文字の欠落・移動や書式の混線が実際に発生することが
+    判明したため、この方式に統一した(以前「JS側から直接書き換えると送信が効かなく
+    なる」という仮説でキー入力方式に切り替えたが、その後の検証でキー入力方式に
+    変えても送信の問題は直らなかったため、この仮説は誤りだったと判断している。
+    insertHTML方式で生成されるHTML自体は、実際の送信データ(hidden inputのvalue)で
+    正しい内容になっていることを確認済み)。"""
+    html = render_block_html(block)
+    ok = page.evaluate(TRIX_INSERT_HTML_JS, [html])
+    if not ok:
+        raise RuntimeError(
+            "本文エディタ(trix-editor)が見つからず、テキストを挿入できませんでした。"
+        )
 
 
 TRIX_DROP_FILE_JS = """
@@ -402,15 +401,9 @@ def fill_body(page, blocks: list[dict]) -> None:
             page.keyboard.press("Enter")
             page.keyboard.press("Enter")
         if block["type"] == "image":
-            # Trixはキー入力の反映をrequestAnimationFrameでまとめて行うため、
-            # 直前のキー入力の直後にJS側からdrop相当のイベントを発火すると、
-            # まだTrix内部で反映されていない文字が割り込んで挿入位置がずれる
-            # (実際に文字が欠落・移動する現象を確認済み)。画像挿入の前に
-            # 少し待って、直前の入力がTrixに反映されるのを待つ。
-            page.wait_for_timeout(200)
             insert_inline_image(page, block["path"])
         else:
-            type_block(page, block)
+            insert_text_block(page, block)
     print(f"  本文入力欄: {selector}({len(blocks)}ブロック)")
 
 
@@ -496,18 +489,27 @@ def set_schedule(page, publish_at: datetime) -> None:
     print(f"  予約日時({SCHEDULE_DATETIME_SELECTOR}): {publish_at}")
 
 
-def wait_for_uploads_to_finish(page, timeout_ms: int = 12000) -> None:
-    """ヘッダー画像・本文中の画像のアップロードが完了する(一時的な blob: プレビューURL
-    から実際のサーバーURLに置き換わる)まで待つ。実際の動作確認で、アップロードが
-    完了しないうちに送信すると、サイト側がエラーも出さず黙って送信を無視することが
-    分かったため、送信前に必ず呼び出す。
-    チェック対象はヘッダー画像(.editContents__photoimage--main)と本文エディタ
-    (trix-editor)の中の img だけに絞っている。ページ全体の img[src^="blob:"] を
-    見てしまうと、投稿フォームと無関係な要素(通知アイコンなど)がたまたま
-    blob: を使っていた場合に誤検知して、いつまでも完了しないことがあったため。"""
+def wait_for_uploads_to_finish(page, timeout_ms: int = 10000) -> None:
+    """本文中の画像(Trixの添付ファイル)のアップロードが完了するまで待つ。
+    Trixは添付ファイルの属性(url)が実際のサーバーURLに更新されても、すでに
+    描画済みの<img>要素のsrc属性は自動的には再描画しない(見た目上はblob:の
+    プレビューのままに見えても、実際に保存されるHTML(data-trix-attachmentの
+    JSON)側はすでに更新されている、というTrix特有の挙動)。そのため<img src>
+    ではなく、実際に保存に使われる data-trix-attachment のJSON中のurlを見て
+    判定する(以前は<img src^="blob:">を見ていたため、実際はとっくに完了して
+    いても永遠に未完了と誤判定していた)。"""
     try:
         page.wait_for_function(
-            "() => document.querySelectorAll('.editContents__photoimage--main img[src^=\"blob:\"], trix-editor img[src^=\"blob:\"]').length === 0",
+            """() => {
+                const figs = document.querySelectorAll('trix-editor figure[data-trix-attachment]');
+                for (const f of figs) {
+                    try {
+                        const attrs = JSON.parse(f.getAttribute('data-trix-attachment'));
+                        if (attrs.url && attrs.url.startsWith('blob:')) return false;
+                    } catch (e) {}
+                }
+                return true;
+            }""",
             timeout=timeout_ms,
         )
         print("  画像のアップロード完了を確認しました。")
