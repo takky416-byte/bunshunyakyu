@@ -531,8 +531,11 @@ def wait_for_uploads_to_finish(page, timeout_ms: int = 10000) -> None:
     ことがあるため、「blobの添付が0件」であることそのものは完了の証拠にならない
     (=まだ挿入すらされていない場合も0件になり、即座に完了扱いされてしまい、次の
     操作が割り込んで画像そのものが失われる不具合が実際に発生した)。そのため、
-    最後に挿入された添付が実際に存在し、かつそのurlがblob:でなくなっている、
-    という条件で判定する。"""
+    最後に挿入された添付が実際に存在し、かつそのurlが(空/未設定ではなく)
+    実際の値として設定されていて、それがblob:でもない、という条件で判定する
+    (「urlがblob:で始まらない」だけを条件にすると、urlキー自体がまだ存在しない
+    ＝本当は何も終わっていない状態まで「完了」と誤判定してしまい、src/hrefが
+    欠けた不完全な添付情報が保存されてしまう不具合が実際に発生した)。"""
     try:
         page.wait_for_function(
             """() => {
@@ -541,7 +544,7 @@ def wait_for_uploads_to_finish(page, timeout_ms: int = 10000) -> None:
                 const last = figs[figs.length - 1];
                 try {
                     const attrs = JSON.parse(last.getAttribute('data-trix-attachment'));
-                    return !(attrs.url && attrs.url.startsWith('blob:'));
+                    return !!attrs.url && !attrs.url.startsWith('blob:');
                 } catch (e) {
                     return false;
                 }
