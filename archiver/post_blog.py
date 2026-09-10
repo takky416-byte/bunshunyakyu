@@ -447,11 +447,24 @@ def set_schedule(page, publish_at: datetime) -> None:
 
 
 def submit_post(page) -> None:
-    """公開/予約ボタンを押す(予約投稿・即時公開のどちらでも同じボタン)。"""
+    """公開/予約ボタンを押す(予約投稿・即時公開のどちらでも同じボタン)。
+    ボタンがまだdisabled(バリデーション未通過)の場合はクリックしても何も起きず
+    「エラーは出ないが実際には投稿されない」状態になるため、事前にチェックする。"""
     try:
         btn = page.locator(SUBMIT_BUTTON_SELECTOR).first
         btn.wait_for(state="visible", timeout=3000)
+        if btn.is_disabled():
+            print("  [警告] 送信ボタンがまだ無効(disabled)になっています。"
+                  "少し待ってから再確認します。", file=sys.stderr)
+            page.wait_for_timeout(1500)
+        if btn.is_disabled():
+            raise RuntimeError(
+                "送信ボタンが無効(disabled)のままクリックできませんでした。"
+                "タイトル/本文が空、または他の必須項目が未入力の可能性があります。"
+            )
         btn.click(force=True)
+    except RuntimeError:
+        raise
     except Exception:
         if not click_by_text_candidates(page, SUBMIT_BUTTON_TEXT_FALLBACK):
             raise RuntimeError(
@@ -463,6 +476,14 @@ def submit_post(page) -> None:
     except Exception:
         pass
     page.wait_for_timeout(1500)
+
+    if "/blogs/new" in page.url:
+        raise RuntimeError(
+            f"送信ボタンを押した後もURLが新規投稿ページのままです({page.url})。"
+            "クリックはできても、サーバー側のバリデーションエラーなどで実際には"
+            "保存されていない可能性があります。"
+        )
+    print(f"  送信後のURL: {page.url}")
 
 
 def parse_publish_at(value: str) -> datetime:
@@ -566,6 +587,8 @@ def main() -> None:
             else:
                 submit_post(page)
                 print("[完了] 投稿を送信しました。サイト側で公開状態をご確認ください。")
+            if args.headed:
+                input("  ブラウザで結果を確認してください。Enterキーを押すと閉じます... ")
         except Exception as e:
             fail_dir = Path(args.inspect_out)
             fail_dir.mkdir(parents=True, exist_ok=True)
@@ -577,6 +600,8 @@ def main() -> None:
             print(f"[エラー] {e}", file=sys.stderr)
             print(f"  失敗時点のHTML/スクリーンショットを {fail_dir} に保存しました。"
                   "共有してもらえればセレクタを調整します。", file=sys.stderr)
+            if args.headed:
+                input("  ブラウザで状況を確認してください。Enterキーを押すと閉じます... ")
             browser.close()
             sys.exit(1)
 
