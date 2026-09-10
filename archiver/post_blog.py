@@ -121,12 +121,16 @@ HEADER_IMAGE_CROP_CONFIRM_TEXT_FALLBACK = ["確定する", "完了", "適用す�
 SCHEDULE_TOGGLE_LABEL_SELECTOR = 'label[for="editContents_reservation"]'
 SCHEDULE_DATETIME_SELECTOR = "#reservation_post_time"
 
-# 送信(公開/予約)ボタンは .subHeader__buttons 内の button.btnFill--medium
-# (下書き保存ボタンは btnOutline--medium で別物なので触らない)。
+# 送信(公開/予約)ボタンは .subHeader__buttons 内の button.btnFill--medium。
 # 予約投稿・即時公開のどちらでも同じボタンで、表示文言だけが動的に変わる構造のため、
 # クラスセレクタを優先し、文言候補はフォールバックとして残す。
 SUBMIT_BUTTON_SELECTOR = ".subHeader__buttons button.btnFill--medium"
 SUBMIT_BUTTON_TEXT_FALLBACK = ["予約投稿する", "予約する", "投稿する", "公開する", "公開", "投稿"]
+
+# 下書き保存ボタンは同じ .subHeader__buttons 内の button.btnOutline--medium
+# (onSubmitDraft が動く、公開/予約ボタンとは別の処理)。
+DRAFT_BUTTON_SELECTOR = ".subHeader__buttons button.btnOutline--medium"
+DRAFT_BUTTON_TEXT_FALLBACK = ["下書き保存"]
 
 
 def get_credentials(args) -> tuple[str, str]:
@@ -502,30 +506,30 @@ def wait_for_uploads_to_finish(page, timeout_ms: int = 30000) -> None:
               "(反応がないまま何も保存されない)可能性があります。", file=sys.stderr)
 
 
-def submit_post(page) -> None:
-    """公開/予約ボタンを押す(予約投稿・即時公開のどちらでも同じボタン)。
+def click_submit_button(page, selector: str, text_fallback: list[str], label: str) -> None:
+    """公開/予約または下書き保存のボタンを押す共通処理。
     ボタンがまだdisabled(バリデーション未通過)の場合はクリックしても何も起きず
-    「エラーは出ないが実際には投稿されない」状態になるため、事前にチェックする。"""
+    「エラーは出ないが実際には保存されない」状態になるため、事前にチェックする。"""
     try:
-        btn = page.locator(SUBMIT_BUTTON_SELECTOR).first
+        btn = page.locator(selector).first
         btn.wait_for(state="visible", timeout=3000)
         if btn.is_disabled():
-            print("  [警告] 送信ボタンがまだ無効(disabled)になっています。"
+            print(f"  [警告] {label}ボタンがまだ無効(disabled)になっています。"
                   "少し待ってから再確認します。", file=sys.stderr)
             page.wait_for_timeout(1500)
         if btn.is_disabled():
             raise RuntimeError(
-                "送信ボタンが無効(disabled)のままクリックできませんでした。"
+                f"{label}ボタンが無効(disabled)のままクリックできませんでした。"
                 "タイトル/本文が空、または他の必須項目が未入力の可能性があります。"
             )
         btn.click(force=True)
     except RuntimeError:
         raise
     except Exception:
-        if not click_by_text_candidates(page, SUBMIT_BUTTON_TEXT_FALLBACK):
+        if not click_by_text_candidates(page, text_fallback):
             raise RuntimeError(
-                "送信ボタンが見つかりませんでした。SUBMIT_BUTTON_SELECTOR / "
-                "SUBMIT_BUTTON_TEXT_FALLBACK を実際の構造に合わせて調整してください。"
+                f"{label}ボタンが見つかりませんでした。セレクタ/文言候補を"
+                "実際の構造に合わせて調整してください。"
             )
     try:
         page.wait_for_load_state("networkidle", timeout=15000)
@@ -535,11 +539,21 @@ def submit_post(page) -> None:
 
     if "/blogs/new" in page.url:
         raise RuntimeError(
-            f"送信ボタンを押した後もURLが新規投稿ページのままです({page.url})。"
+            f"{label}ボタンを押した後もURLが新規投稿ページのままです({page.url})。"
             "クリックはできても、サーバー側のバリデーションエラーなどで実際には"
             "保存されていない可能性があります。"
         )
-    print(f"  送信後のURL: {page.url}")
+    print(f"  {label}後のURL: {page.url}")
+
+
+def submit_post(page) -> None:
+    """公開/予約ボタンを押す(予約投稿・即時公開のどちらでも同じボタン)。"""
+    click_submit_button(page, SUBMIT_BUTTON_SELECTOR, SUBMIT_BUTTON_TEXT_FALLBACK, "送信")
+
+
+def submit_draft(page) -> None:
+    """下書き保存ボタンを押す。"""
+    click_submit_button(page, DRAFT_BUTTON_SELECTOR, DRAFT_BUTTON_TEXT_FALLBACK, "下書き保存")
 
 
 def parse_publish_at(value: str) -> datetime:
@@ -580,6 +594,9 @@ def main() -> None:
     group.add_argument("--publish-at", type=parse_publish_at,
                         help="予約投稿する日時(例: '2026-09-15 21:00')")
     group.add_argument("--publish-now", action="store_true", help="予約せず今すぐ公開する")
+    group.add_argument("--draft", action="store_true",
+                        help="公開/予約はせず、下書き保存ボタンを押すだけにする"
+                             "(予約投稿がうまくいかない場合の切り分け・代替手段用)")
 
     args = parser.parse_args()
 
@@ -588,8 +605,8 @@ def main() -> None:
             parser.error("--title を指定してください")
         if not args.body_file:
             parser.error("--body-file を指定してください")
-        if not args.publish_at and not args.publish_now:
-            parser.error("--publish-at か --publish-now のどちらかを指定してください")
+        if not args.publish_at and not args.publish_now and not args.draft:
+            parser.error("--publish-at か --publish-now か --draft のいずれかを指定してください")
 
     try:
         from playwright.sync_api import sync_playwright
@@ -646,7 +663,10 @@ def main() -> None:
             if args.header_image:
                 set_header_image(page, args.header_image)
             fill_body(page, blocks)
-            if args.publish_at:
+            if args.draft:
+                submit_draft(page)
+                print("[完了] 下書き保存しました。サイト側で内容をご確認ください。")
+            elif args.publish_at:
                 set_schedule(page, args.publish_at)
                 submit_post(page)
                 print(f"[完了] 予約投稿を送信しました(予約日時: {args.publish_at})。"
