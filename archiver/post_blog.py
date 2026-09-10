@@ -306,6 +306,11 @@ TRIX_INSERT_HTML_JS = """
     const el = document.querySelector('trix-editor');
     if (!el || !el.editor) return false;
     el.editor.insertHTML(html);
+    // vue-trix 側の v-model="content.body" が同期するように、Trixの変更通知
+    // イベントを明示的に発火させておく(insertHTML() 自体がこれらのイベントを
+    // 発火するかどうかvue-trixラッパーの実装依存のため、念のため両方送る)。
+    el.dispatchEvent(new Event('trix-change', { bubbles: true }));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
     return true;
 }
 """
