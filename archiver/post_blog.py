@@ -497,18 +497,25 @@ def wait_for_uploads_to_finish(page, timeout_ms: int = 10000) -> None:
     JSON)側はすでに更新されている、というTrix特有の挙動)。そのため<img src>
     ではなく、実際に保存に使われる data-trix-attachment のJSON中のurlを見て
     判定する(以前は<img src^="blob:">を見ていたため、実際はとっくに完了して
-    いても永遠に未完了と誤判定していた)。"""
+    いても永遠に未完了と誤判定していた)。
+    なお、drop相当のイベントを発火した直後はTrixがまだ添付要素を作成していない
+    ことがあるため、「blobの添付が0件」であることそのものは完了の証拠にならない
+    (=まだ挿入すらされていない場合も0件になり、即座に完了扱いされてしまい、次の
+    操作が割り込んで画像そのものが失われる不具合が実際に発生した)。そのため、
+    最後に挿入された添付が実際に存在し、かつそのurlがblob:でなくなっている、
+    という条件で判定する。"""
     try:
         page.wait_for_function(
             """() => {
                 const figs = document.querySelectorAll('trix-editor figure[data-trix-attachment]');
-                for (const f of figs) {
-                    try {
-                        const attrs = JSON.parse(f.getAttribute('data-trix-attachment'));
-                        if (attrs.url && attrs.url.startsWith('blob:')) return false;
-                    } catch (e) {}
+                if (figs.length === 0) return false;
+                const last = figs[figs.length - 1];
+                try {
+                    const attrs = JSON.parse(last.getAttribute('data-trix-attachment'));
+                    return !(attrs.url && attrs.url.startsWith('blob:'));
+                } catch (e) {
+                    return false;
                 }
-                return true;
             }""",
             timeout=timeout_ms,
         )
