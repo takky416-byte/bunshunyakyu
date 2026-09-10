@@ -608,6 +608,13 @@ def main() -> None:
         # エラーも出さず投稿だけ静かに無視される可能性があるため、Playwrightに
         # 同梱されている実際のChromiumの標準UAをそのまま使う。
         context = browser.new_context()
+        # navigator.webdriver は Playwright/Selenium等で起動したブラウザだと true になり、
+        # サイト側のボット判定に使われることがある(該当する場合、投稿ボタンを押しても
+        # エラーも出さず何も起きない、という今回まさに起きている症状と一致するため)。
+        # 各ページのスクリプトが実行される前に false を返すよう上書きしておく。
+        context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', { get: () => false });"
+        )
         page = context.new_page()
 
         print(f"[ログイン] {args.login_url}")
@@ -639,7 +646,6 @@ def main() -> None:
             if args.header_image:
                 set_header_image(page, args.header_image)
             fill_body(page, blocks)
-            wait_for_uploads_to_finish(page)
             if args.publish_at:
                 set_schedule(page, args.publish_at)
                 submit_post(page)
