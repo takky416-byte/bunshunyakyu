@@ -22,11 +22,11 @@ yakyu.bunshun.jp へのネットワークアクセスがポリシーでブロッ
     # 0. まずはログイン〜投稿フォーム表示だけ試して、フォームのHTMLを確認する
     python post_blog.py --login-url https://yakyu.bunshun.jp/login --inspect
 
-    # 1. 本文をファイルから読み込んで予約投稿する(画像は複数指定可)
+    # 1. 本文をファイルから読み込んで予約投稿する(ヘッダー画像・本文途中の画像も指定)
     python post_blog.py --login-url https://yakyu.bunshun.jp/login \\
         --title "9/10 の試合を振り返って" \\
+        --header-image header.jpg \\
         --body-file post_body.txt \\
-        --image image1.png --image image2.png \\
         --publish-at "2026-09-15 21:00"
 
     # 2. 予約せず、今すぐ公開したい場合
@@ -37,11 +37,29 @@ yakyu.bunshun.jp へのネットワークアクセスがポリシーでブロッ
     pip install playwright
     playwright install chromium
 
-本文ファイルについて:
-    プレーンテキスト/Markdownを想定しています。空行で段落を区切ってください。
-    リッチテキストエディタに対して段落ごとに Enter で改行しながら入力するため、
-    見出しや太字などのMarkdown記法はそのままの文字として入力されます
-    (エディタ側で自動変換されない限り装飾は反映されません)。
+本文ファイル(--body-file)の書き方:
+    プレーンテキスト/Markdown風の記法を使います。段落は空行で区切ってください。
+
+    - 太字: **太字にしたい部分**
+    - 斜体: *斜体にしたい部分* または _斜体にしたい部分_
+    - 本文途中に画像を差し込む: 画像だけの行(前後を空行で区切った1行)に
+      ![説明](画像ファイルのパス) と書く(説明部分は空でも可: ![](img.jpg))
+
+    例:
+        今日は完封勝利でした。**エースの好投**が光った試合でした。
+
+        ![完投したエースの写真](images/ace.jpg)
+
+        次戦も*期待*しています。
+
+    太字/斜体はエディタの Ctrl+B / Ctrl+I ショートカットを使って切り替えながら
+    入力する仕組みのため、投稿先のエディタがこれらのショートカットに対応して
+    いない場合は反映されません。画像挿入もエディタのツールバーの「画像」ボタンを
+    推測でクリックする仕組みのため、ボタンが見つからない場合はエラーになります
+    (--inspect で保存したHTMLを見せてもらえれば調整します)。
+
+    本文とは別に、記事の一番上に出る「ヘッダー画像(アイキャッチ/サムネイル)」は
+    --header-image で指定してください。
 """
 
 from __future__ import annotations
@@ -80,8 +98,15 @@ NEW_POST_BODY_SELECTORS = [
     'textarea[placeholder*="本文"]',
 ]
 
-NEW_POST_IMAGE_INPUT_SELECTORS = [
-    'input[type="file"]',
+# 本文エディタのツールバーにある「画像を挿入」ボタンの候補(アイコンのみのボタンが
+# 多いため、aria-label / title 属性のテキストで探す。実際の文言が違う場合は
+# --inspect の form.html を見ながら調整する)
+NEW_POST_INLINE_IMAGE_BUTTON_TEXT = ["画像を挿入", "画像を追加", "画像", "Image", "写真"]
+
+# ヘッダー画像(アイキャッチ/サムネイル/カバー画像)のアップロード欄の近くにあるはずの
+# ラベルテキスト候補
+HEADER_IMAGE_LABEL_TEXT = [
+    "ヘッダー画像", "アイキャッチ画像", "アイキャッチ", "サムネイル画像", "サムネイル", "カバー画像",
 ]
 
 # 「予約投稿」への切り替え(トグル/チェックボックス/ラジオ)候補
@@ -114,11 +139,42 @@ def get_credentials(args) -> tuple[str, str]:
     return username, password
 
 
-def read_body_paragraphs(body_file: Path) -> list[str]:
+INLINE_IMAGE_LINE_RE = re.compile(r'^!\[[^\]]*\]\(([^)]+)\)$')
+INLINE_STYLE_RE = re.compile(r'\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_', re.DOTALL)
+
+
+def parse_inline_runs(text: str) -> list[tuple[str, bool, bool]]:
+    """段落中の **太字** / *斜体* / _斜体_ 記法を (テキスト, bold, italic) の並びに分解する。"""
+    runs: list[tuple[str, bool, bool]] = []
+    last_end = 0
+    for m in INLINE_STYLE_RE.finditer(text):
+        if m.start() > last_end:
+            runs.append((text[last_end:m.start()], False, False))
+        if m.group(1) is not None:
+            runs.append((m.group(1), True, False))
+        else:
+            runs.append((m.group(2) or m.group(3), False, True))
+        last_end = m.end()
+    if last_end < len(text):
+        runs.append((text[last_end:], False, False))
+    return [r for r in runs if r[0]]
+
+
+def read_body_blocks(body_file: Path) -> list[dict]:
+    """本文ファイルを、段落(文字装飾つき)と画像挿入指示のブロック列に変換する。
+    - 空行区切りの段落: **太字** / *斜体* / _斜体_ をサポート
+    - 画像だけの行(1行が丸ごと ![alt](path) の形): その位置に画像を挿入する指示として扱う
+    """
     text = body_file.read_text(encoding="utf-8")
-    # 空行区切りで段落に分割(前後の空白は除去)
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text)]
-    return [p for p in paragraphs if p]
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    blocks: list[dict] = []
+    for para in paragraphs:
+        m = INLINE_IMAGE_LINE_RE.match(para)
+        if m:
+            blocks.append({"type": "image", "path": m.group(1)})
+        else:
+            blocks.append({"type": "text", "runs": parse_inline_runs(para)})
+    return blocks
 
 
 def find_first_locator(page, selectors: list[str], timeout_ms: int = 5000):
@@ -214,7 +270,68 @@ def fill_title(page, title: str) -> None:
     print(f"  タイトル入力欄: {selector}")
 
 
-def fill_body(page, paragraphs: list[str]) -> None:
+def type_run(page, text: str, bold: bool, italic: bool) -> None:
+    """1つのテキスト区間を、必要ならCtrl+B / Ctrl+Iでトグルしながら入力する。
+    エディタがこれらのショートカットに対応していない場合、装飾は反映されない。"""
+    if bold:
+        page.keyboard.press("Control+b")
+    if italic:
+        page.keyboard.press("Control+i")
+    page.keyboard.type(text, delay=5)
+    if italic:
+        page.keyboard.press("Control+i")
+    if bold:
+        page.keyboard.press("Control+b")
+
+
+def insert_inline_image(page, image_path: str) -> None:
+    """本文エディタのカーソル位置に画像を挿入する。
+    ツールバーの「画像」ボタンを押すとファイル選択ダイアログが開く構造を想定し、
+    Playwrightのファイル選択インターセプトで対応する。"""
+    resolved = str(Path(image_path).resolve())
+    if not Path(resolved).is_file():
+        raise RuntimeError(f"画像ファイルが見つかりません: {resolved}")
+
+    for text in NEW_POST_INLINE_IMAGE_BUTTON_TEXT:
+        for locator in (
+            page.get_by_role("button", name=re.compile(re.escape(text), re.I)),
+            page.locator(f'[aria-label*="{text}"]'),
+            page.locator(f'[title*="{text}"]'),
+        ):
+            try:
+                loc = locator.first
+                loc.wait_for(state="visible", timeout=1500)
+                with page.expect_file_chooser(timeout=3000) as fc_info:
+                    loc.click()
+                fc_info.value.set_files(resolved)
+                page.wait_for_timeout(800)
+                print(f"  本文中に画像を挿入しました: {resolved}")
+                return
+            except Exception:
+                continue
+
+    # フォールバック: エディタ内に直接 input[type=file] が隠れているパターン
+    try:
+        file_input = page.locator(
+            '[contenteditable="true"] input[type="file"], '
+            '.ProseMirror input[type="file"], .ql-editor input[type="file"]'
+        ).first
+        file_input.wait_for(state="attached", timeout=1500)
+        file_input.set_input_files(resolved)
+        page.wait_for_timeout(800)
+        print(f"  本文中に画像を挿入しました(直接input): {resolved}")
+        return
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        f"本文中に画像を挿入するボタンが見つかりませんでした({resolved})。"
+        "NEW_POST_INLINE_IMAGE_BUTTON_TEXT を、エディタのツールバーの実際のアイコン/"
+        "文言に合わせて調整してください(--inspect の form.html でツールバー部分を確認)。"
+    )
+
+
+def fill_body(page, blocks: list[dict]) -> None:
     loc, selector = find_first_locator(page, NEW_POST_BODY_SELECTORS)
     if not loc:
         raise RuntimeError(
@@ -222,35 +339,56 @@ def fill_body(page, paragraphs: list[str]) -> None:
             "実際のフォーム構造(--inspect の form.html)に合わせて調整してください。"
         )
     loc.click()
-    for i, para in enumerate(paragraphs):
+    for i, block in enumerate(blocks):
         if i > 0:
             page.keyboard.press("Enter")
             page.keyboard.press("Enter")
-        page.keyboard.type(para, delay=5)
-    print(f"  本文入力欄: {selector}({len(paragraphs)}段落)")
+        if block["type"] == "image":
+            insert_inline_image(page, block["path"])
+            loc.click()  # 画像挿入操作でツールバー側にフォーカスが移った場合に本文へ戻す
+        else:
+            for run_text, bold, italic in block["runs"]:
+                type_run(page, run_text, bold, italic)
+    print(f"  本文入力欄: {selector}({len(blocks)}ブロック)")
 
 
-def attach_images(page, image_paths: list[str]) -> None:
-    if not image_paths:
-        return
-    resolved = [str(Path(p).resolve()) for p in image_paths]
-    for p in resolved:
-        if not Path(p).is_file():
-            raise RuntimeError(f"画像ファイルが見つかりません: {p}")
+def set_header_image(page, image_path: str) -> None:
+    """記事一番上のヘッダー画像(アイキャッチ/サムネイル)をアップロードする。"""
+    resolved = str(Path(image_path).resolve())
+    if not Path(resolved).is_file():
+        raise RuntimeError(f"ヘッダー画像ファイルが見つかりません: {resolved}")
 
-    file_inputs = page.locator(", ".join(NEW_POST_IMAGE_INPUT_SELECTORS))
-    count = file_inputs.count()
-    if count == 0:
-        raise RuntimeError(
-            "画像アップロード用の input[type=file] が見つかりませんでした。"
-            "エディタのツールバーから画像追加ボタンを押さないと input が現れない"
-            "構造の可能性があります。--inspect の form.html / form.png を確認してください。"
+    for label_text in HEADER_IMAGE_LABEL_TEXT:
+        try:
+            label_loc = page.get_by_text(label_text, exact=False).first
+            label_loc.wait_for(state="visible", timeout=1500)
+        except Exception:
+            continue
+
+        container = label_loc.locator(
+            "xpath=ancestor::*[self::div or self::section or self::label][1]"
         )
-    # 最初に見つかった file input にまとめて設定する(複数画像対応のものを想定)。
-    # 1枚ずつしか受け付けない構造の場合は、うまく添付できない可能性があるため
-    # form.html を見ながら要調整。
-    file_inputs.first.set_input_files(resolved)
-    print(f"  画像 {len(resolved)} 枚を添付しました: {', '.join(resolved)}")
+        try:
+            file_input = container.locator('input[type="file"]').first
+            file_input.wait_for(state="attached", timeout=1500)
+            file_input.set_input_files(resolved)
+            print(f"  ヘッダー画像を設定しました({label_text}周辺のinput): {resolved}")
+            return
+        except Exception:
+            pass
+        try:
+            with page.expect_file_chooser(timeout=3000) as fc_info:
+                container.click()
+            fc_info.value.set_files(resolved)
+            print(f"  ヘッダー画像を設定しました({label_text}クリック): {resolved}")
+            return
+        except Exception:
+            continue
+
+    raise RuntimeError(
+        f"ヘッダー画像のアップロード欄が見つかりませんでした({resolved})。"
+        "HEADER_IMAGE_LABEL_TEXT を実際のラベル文言に合わせて調整してください。"
+    )
 
 
 def set_schedule(page, publish_at: datetime) -> None:
@@ -322,8 +460,12 @@ def main() -> None:
     parser.add_argument("--inspect-out", default=str(DEFAULT_INSPECT_DIR), help="--inspect の保存先")
 
     parser.add_argument("--title", help="記事タイトル")
-    parser.add_argument("--body-file", help="本文が書かれたテキスト/Markdownファイル")
-    parser.add_argument("--image", action="append", default=[], help="添付する画像ファイル(複数指定可)")
+    parser.add_argument("--header-image", help="ヘッダー画像(アイキャッチ/サムネイル)として使う画像ファイル")
+    parser.add_argument("--body-file", help="本文が書かれたテキスト/Markdownファイル"
+                                             "(**太字**/*斜体*、![alt](path)での画像挿入に対応)")
+    parser.add_argument("--image", action="append", default=[],
+                         help="本文の最後にまとめて挿入する画像(複数指定可)。"
+                              "本文の途中に差し込みたい場合は --body-file 中に ![](path) と書く")
 
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--publish-at", type=parse_publish_at,
@@ -376,10 +518,14 @@ def main() -> None:
         page.wait_for_timeout(1000)
 
         try:
-            paragraphs = read_body_paragraphs(Path(args.body_file))
+            blocks = read_body_blocks(Path(args.body_file))
+            for image_path in args.image:
+                blocks.append({"type": "image", "path": image_path})
+
             fill_title(page, args.title)
-            fill_body(page, paragraphs)
-            attach_images(page, args.image)
+            if args.header_image:
+                set_header_image(page, args.header_image)
+            fill_body(page, blocks)
             if args.publish_at:
                 set_schedule(page, args.publish_at)
                 submit_post(page, schedule=True)
