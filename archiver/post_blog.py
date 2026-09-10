@@ -43,21 +43,29 @@ yakyu.bunshun.jp へのネットワークアクセスがポリシーでブロッ
 
     - 太字: **太字にしたい部分**
     - 斜体: *斜体にしたい部分* または _斜体にしたい部分_
+    - 下線: __下線を引きたい部分__
+    - 組み合わせ可(例: **__太字+下線の見出し__**)
+    - 引用(blockquote): 段落の先頭を "> " にする
     - 本文途中に画像を差し込む: 画像だけの行(前後を空行で区切った1行)に
       ![説明](画像ファイルのパス) と書く(説明部分は空でも可: ![](img.jpg))
 
     例:
-        今日は完封勝利でした。**エースの好投**が光った試合でした。
+        **__IT野球選手名鑑 #017__**
+
+        ルーター
 
         ![完投したエースの写真](images/ace.jpg)
 
-        次戦も*期待*しています。
+        今日は完封勝利でした。**エースの好投**が光った試合でした。
 
-    太字/斜体はエディタの Ctrl+B / Ctrl+I ショートカットを使って切り替えながら
-    入力する仕組みのため、投稿先のエディタがこれらのショートカットに対応して
-    いない場合は反映されません。画像挿入もエディタのツールバーの「画像」ボタンを
-    推測でクリックする仕組みのため、ボタンが見つからない場合はエラーになります
-    (--inspect で保存したHTMLを見せてもらえれば調整します)。
+        > この記事は生成AIを活用して執筆しています。
+
+    実際に公開済みの記事のHTML構造(<strong>/<em>/<u>/<blockquote>)を確認したうえで、
+    上記の記法から同じHTMLを組み立てて、Trixエディタが公式に提供している
+    editor.insertHTML() API(リッチテキストを貼り付けたのと同じ処理)で挿入する
+    仕組みのため、太字・斜体・下線・引用はキーボードショートカットの当て推量に
+    頼らず確実に反映されます。画像挿入はエディタのツールバーではなく、Trixの
+    editor.insertFile() API(ドラッグ&ドロップ/貼り付けと同じ経路)を使っています。
 
     本文とは別に、記事の一番上に出る「ヘッダー画像(アイキャッチ/サムネイル)」は
     --header-image で指定してください。
@@ -71,6 +79,7 @@ import os
 import re
 import sys
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
 DEFAULT_LOGIN_URL = "https://yakyu.bunshun.jp/login"
@@ -130,30 +139,34 @@ def get_credentials(args) -> tuple[str, str]:
 
 
 INLINE_IMAGE_LINE_RE = re.compile(r'^!\[[^\]]*\]\(([^)]+)\)$')
-INLINE_STYLE_RE = re.compile(r'\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_', re.DOTALL)
+INLINE_TOKEN_RE = re.compile(r'(\*\*|__|\*|_)')
 
 
-def parse_inline_runs(text: str) -> list[tuple[str, bool, bool]]:
-    """段落中の **太字** / *斜体* / _斜体_ 記法を (テキスト, bold, italic) の並びに分解する。"""
-    runs: list[tuple[str, bool, bool]] = []
-    last_end = 0
-    for m in INLINE_STYLE_RE.finditer(text):
-        if m.start() > last_end:
-            runs.append((text[last_end:m.start()], False, False))
-        if m.group(1) is not None:
-            runs.append((m.group(1), True, False))
+def parse_inline_runs(text: str) -> list[tuple[str, bool, bool, bool]]:
+    """段落中の **太字** / *斜体*・_斜体_ / __下線__ 記法を、トグル方式で
+    (テキスト, bold, italic, underline) の並びに分解する。**__組み合わせ__** のような
+    入れ子(太字+下線など)も、単純なトグルの積み重ねとして扱えるので対応できる。"""
+    bold = italic = underline = False
+    runs: list[tuple[str, bool, bool, bool]] = []
+    for tok in INLINE_TOKEN_RE.split(text):
+        if tok == "":
+            continue
+        if tok == "**":
+            bold = not bold
+        elif tok == "__":
+            underline = not underline
+        elif tok in ("*", "_"):
+            italic = not italic
         else:
-            runs.append((m.group(2) or m.group(3), False, True))
-        last_end = m.end()
-    if last_end < len(text):
-        runs.append((text[last_end:], False, False))
-    return [r for r in runs if r[0]]
+            runs.append((tok, bold, italic, underline))
+    return runs
 
 
 def read_body_blocks(body_file: Path) -> list[dict]:
     """本文ファイルを、段落(文字装飾つき)と画像挿入指示のブロック列に変換する。
-    - 空行区切りの段落: **太字** / *斜体* / _斜体_ をサポート
+    - 空行区切りの段落: **太字** / *斜体*・_斜体_ / __下線__ をサポート(組み合わせ可)
     - 画像だけの行(1行が丸ごと ![alt](path) の形): その位置に画像を挿入する指示として扱う
+    - 行頭が "> " の段落: 引用(blockquote)として扱う
     """
     text = body_file.read_text(encoding="utf-8")
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
@@ -162,9 +175,31 @@ def read_body_blocks(body_file: Path) -> list[dict]:
         m = INLINE_IMAGE_LINE_RE.match(para)
         if m:
             blocks.append({"type": "image", "path": m.group(1)})
-        else:
-            blocks.append({"type": "text", "runs": parse_inline_runs(para)})
+            continue
+        quote = para.startswith("> ")
+        if quote:
+            para = para[2:]
+        blocks.append({"type": "text", "runs": parse_inline_runs(para), "quote": quote})
     return blocks
+
+
+def render_run_html(text: str, bold: bool, italic: bool, underline: bool) -> str:
+    """1区間のテキストを、実際にTrixが保存する形式(<strong>/<em>/<u>)のHTMLに変換する。"""
+    html = escape(text).replace("\n", "<br>")
+    if underline:
+        html = f"<u>{html}</u>"
+    if italic:
+        html = f"<em>{html}</em>"
+    if bold:
+        html = f"<strong>{html}</strong>"
+    return html
+
+
+def render_block_html(block: dict) -> str:
+    html = "".join(render_run_html(*run) for run in block["runs"])
+    if block.get("quote"):
+        html = f"<blockquote>{html}</blockquote>"
+    return html
 
 
 def find_first_locator(page, selectors: list[str], timeout_ms: int = 5000):
@@ -260,18 +295,27 @@ def fill_title(page, title: str) -> None:
     print(f"  タイトル入力欄: {selector}")
 
 
-def type_run(page, text: str, bold: bool, italic: bool) -> None:
-    """1つのテキスト区間を、必要ならCtrl+B / Ctrl+Iでトグルしながら入力する。
-    エディタがこれらのショートカットに対応していない場合、装飾は反映されない。"""
-    if bold:
-        page.keyboard.press("Control+b")
-    if italic:
-        page.keyboard.press("Control+i")
-    page.keyboard.type(text, delay=5)
-    if italic:
-        page.keyboard.press("Control+i")
-    if bold:
-        page.keyboard.press("Control+b")
+TRIX_INSERT_HTML_JS = """
+([html]) => {
+    const el = document.querySelector('trix-editor');
+    if (!el || !el.editor) return false;
+    el.editor.insertHTML(html);
+    return true;
+}
+"""
+
+
+def insert_html_block(page, html: str) -> None:
+    """本文エディタ(Trix)のカーソル位置にHTML断片を挿入する。
+    editor.insertHTML() はリッチテキストを貼り付けた場合と同じ処理を通るため、
+    <strong>/<em>/<u>/<blockquote> をキーボードショートカットの推測なしに
+    確実に反映できる(実際に公開済みの記事のHTML構造から、これらのタグで
+    保存されることを確認済み)。"""
+    ok = page.evaluate(TRIX_INSERT_HTML_JS, [html])
+    if not ok:
+        raise RuntimeError(
+            "本文エディタ(trix-editor)が見つからず、HTMLを挿入できませんでした。"
+        )
 
 
 TRIX_INSERT_FILE_JS = """
@@ -330,8 +374,7 @@ def fill_body(page, blocks: list[dict]) -> None:
         if block["type"] == "image":
             insert_inline_image(page, block["path"])
         else:
-            for run_text, bold, italic in block["runs"]:
-                type_run(page, run_text, bold, italic)
+            insert_html_block(page, render_block_html(block))
     print(f"  本文入力欄: {selector}({len(blocks)}ブロック)")
 
 
