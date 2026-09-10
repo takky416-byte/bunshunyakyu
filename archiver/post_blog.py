@@ -722,6 +722,18 @@ def main() -> None:
             "Object.defineProperty(navigator, 'webdriver', { get: () => false });"
         )
         page = context.new_page()
+        # 予約投稿/公開ボタンをクリックしてもコンソール出力もネットワーク
+        # リクエストも一切発生しない、という現象の仮説として、window.confirm()
+        # のようなネイティブダイアログが出ていて、それをPlaywrightが既定の
+        # 挙動(自動キャンセル)で握りつぶしている可能性がある(ネイティブダイアログ
+        # はコンソール/ネットワークのどちらにも痕跡を残さないため、この仮説は
+        # これまでの「何も起きない」という観測と矛盾しない)。ダイアログが出たら
+        # 内容を表示した上でOK(承認)する。
+        def _on_dialog(dialog):
+            print(f"  [診断] ダイアログを検出しました(type={dialog.type}): "
+                  f"{dialog.message!r} → 承認(OK)します。")
+            dialog.accept()
+        page.on("dialog", _on_dialog)
 
         print(f"[ログイン] {args.login_url}")
         ok = login_with_browser(page, args.login_url, username, password,
