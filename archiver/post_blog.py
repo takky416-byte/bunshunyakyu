@@ -9,14 +9,15 @@ yakyu.bunshun.jp のマイページから、ブログ記事を自動投稿(予�
 yakyu.bunshun.jp へのネットワークアクセスがポリシーでブロックされているため、
 このスクリプトはユーザー自身のPC(またはアクセス制限のない環境)で実行してください。
 
-**重要 - 実際のフォーム構造が未確認です:**
-新規投稿フォームの実際のHTML構造(入力欄のname属性やクラス名)を確認できない状態で
-作成しているため、`NEW_POST_*_SELECTORS` は「よくあるパターン」からの推測です。
-初回は必ず `--inspect` を付けて実行し、フォームが正しく開けているか
-(`archive/_new_post_inspect/` に保存される `form.html` / `form.png`)を確認してください。
-自動入力がうまくいかない場合は、その `form.html` を見せてもらえれば、実際の構造に
-合わせて `NEW_POST_*_SELECTORS` を調整します(archive_site.py の CONTENT_SELECTORS
-などを調整してきたのと同じ流れです)。
+**フォーム構造について:**
+新規投稿ページ(https://yakyu.bunshun.jp/blogs/new)は実際のHTMLを確認済みで、
+タイトル欄(#title)・本文エディタ(Trixエディタ)・予約投稿の切り替え
+(#editContents_reservation / #reservation_post_time)・送信ボタン
+(.subHeader__buttons button.btnFill--medium)はそのHTML構造に基づいて実装している。
+ただし**ヘッダー画像アップロード後に出る可能性があるクロップ(トリミング)確認モーダルの
+確定ボタンの文言だけは未確認で、`HEADER_IMAGE_CROP_CONFIRM_TEXT` は推測**。
+うまくいかない場合は `--inspect` で保存される `form.html` / `form.png`、または失敗時に
+自動保存される `error_form.html` / `error_form.png` を見せてもらえれば調整する。
 
 使い方:
     # 0. まずはログイン〜投稿フォーム表示だけ試して、フォームのHTMLを確認する
@@ -81,52 +82,41 @@ USER_AGENT = (
     "+for-personal-use-only)"
 )
 
-# 新規投稿フォームの各要素を探すための候補(推測)。
-# 実際のフォームHTML(--inspect で保存される form.html)を見ながら調整してください。
+# 新規投稿フォームの各要素を探すための候補。
+# 2026-09時点で実際に確認できたHTML(yakyu.bunshun.jp/blogs/new, OSIRO基盤)を元にしている。
+# タイトルは <textarea id="title" placeholder="タイトル">
 NEW_POST_TITLE_SELECTORS = [
-    'input[name="title"]',
-    'input[placeholder*="タイトル"]',
-    'textarea[name="title"]',
+    "#title",
     'textarea[placeholder*="タイトル"]',
+    'input[placeholder*="タイトル"]',
 ]
 
+# 本文は vue-trix コンポーネント(Basecamp社の Trix エディタ)が使われている。
+# Trixは実行時に <trix-editor contenteditable="true"> を生成する。
 NEW_POST_BODY_SELECTORS = [
+    "trix-editor",
     '[contenteditable="true"]',
-    ".ProseMirror",
-    ".ql-editor",
-    'textarea[name="body"]',
-    'textarea[placeholder*="本文"]',
 ]
 
-# 本文エディタのツールバーにある「画像を挿入」ボタンの候補(アイコンのみのボタンが
-# 多いため、aria-label / title 属性のテキストで探す。実際の文言が違う場合は
-# --inspect の form.html を見ながら調整する)
-NEW_POST_INLINE_IMAGE_BUTTON_TEXT = ["画像を挿入", "画像を追加", "画像", "Image", "写真"]
+# ヘッダー(記事一番上の「メイン画像」)は、まず .editMainImageWrapper をクリックすると
+# ドロップダウンメニューが開き、その中の「画像をアップロード」をクリックするとファイル
+# 選択ダイアログが開く、という2段階の構造。クロップ(トリミング)モーダルが後に出る
+# 可能性があるが、その確定ボタンの文言は未確認のため推測(要調整)。
+HEADER_IMAGE_WRAPPER_SELECTOR = ".editMainImageWrapper"
+HEADER_IMAGE_UPLOAD_MENU_TEXT = "画像をアップロード"
+HEADER_IMAGE_CROP_CONFIRM_TEXT = ["完了", "適用する", "この内容で保存", "トリミングして保存", "保存する", "OK", "適用"]
 
-# ヘッダー画像(アイキャッチ/サムネイル/カバー画像)のアップロード欄の近くにあるはずの
-# ラベルテキスト候補
-HEADER_IMAGE_LABEL_TEXT = [
-    "ヘッダー画像", "アイキャッチ画像", "アイキャッチ", "サムネイル画像", "サムネイル", "カバー画像",
-]
+# 「予約投稿」トグルは type=checkbox の #editContents_reservation。
+# チェックを入れると type=datetime-local の #reservation_post_time が現れる。
+SCHEDULE_TOGGLE_LABEL_SELECTOR = 'label[for="editContents_reservation"]'
+SCHEDULE_DATETIME_SELECTOR = "#reservation_post_time"
 
-# 「予約投稿」への切り替え(トグル/チェックボックス/ラジオ)候補
-NEW_POST_SCHEDULE_TOGGLE_TEXT = ["予約投稿", "予約する", "公開日時を指定"]
-
-NEW_POST_SCHEDULE_DATE_SELECTORS = [
-    'input[type="date"]',
-    'input[name*="date"]',
-]
-NEW_POST_SCHEDULE_TIME_SELECTORS = [
-    'input[type="time"]',
-    'input[name*="time"]',
-]
-NEW_POST_SCHEDULE_DATETIME_SELECTORS = [
-    'input[type="datetime-local"]',
-]
-
-# 送信ボタンの文言候補(予約投稿 / 即時公開 それぞれ)
-SUBMIT_BUTTON_TEXT_SCHEDULE = ["予約投稿する", "予約する", "予約して投稿", "この内容で予約する"]
-SUBMIT_BUTTON_TEXT_PUBLISH = ["投稿する", "公開する", "公開", "投稿"]
+# 送信(公開/予約)ボタンは .subHeader__buttons 内の button.btnFill--medium
+# (下書き保存ボタンは btnOutline--medium で別物なので触らない)。
+# 予約投稿・即時公開のどちらでも同じボタンで、表示文言だけが動的に変わる構造のため、
+# クラスセレクタを優先し、文言候補はフォールバックとして残す。
+SUBMIT_BUTTON_SELECTOR = ".subHeader__buttons button.btnFill--medium"
+SUBMIT_BUTTON_TEXT_FALLBACK = ["予約投稿する", "予約する", "投稿する", "公開する", "公開", "投稿"]
 
 
 def get_credentials(args) -> tuple[str, str]:
@@ -284,51 +274,45 @@ def type_run(page, text: str, bold: bool, italic: bool) -> None:
         page.keyboard.press("Control+b")
 
 
+TRIX_INSERT_FILE_JS = """
+([b64, filename, mime]) => {
+    const el = document.querySelector('trix-editor');
+    if (!el || !el.editor) return false;
+    const byteChars = atob(b64);
+    const bytes = new Uint8Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+    const file = new File([bytes], filename, { type: mime });
+    el.editor.insertFile(file);
+    return true;
+}
+"""
+
+
 def insert_inline_image(page, image_path: str) -> None:
-    """本文エディタのカーソル位置に画像を挿入する。
-    ツールバーの「画像」ボタンを押すとファイル選択ダイアログが開く構造を想定し、
-    Playwrightのファイル選択インターセプトで対応する。"""
-    resolved = str(Path(image_path).resolve())
-    if not Path(resolved).is_file():
+    """本文エディタ(Trix)のカーソル位置に画像を挿入する。
+    Trixエディタが公式に提供している editor.insertFile(file) API を、実際に
+    ドラッグ&ドロップ/ペーストで画像を貼り付けたのと同じ経路で呼び出す
+    (ツールバーのボタンを推測でクリックするより確実)。"""
+    import base64
+    import mimetypes
+
+    resolved = Path(image_path).resolve()
+    if not resolved.is_file():
         raise RuntimeError(f"画像ファイルが見つかりません: {resolved}")
 
-    for text in NEW_POST_INLINE_IMAGE_BUTTON_TEXT:
-        for locator in (
-            page.get_by_role("button", name=re.compile(re.escape(text), re.I)),
-            page.locator(f'[aria-label*="{text}"]'),
-            page.locator(f'[title*="{text}"]'),
-        ):
-            try:
-                loc = locator.first
-                loc.wait_for(state="visible", timeout=1500)
-                with page.expect_file_chooser(timeout=3000) as fc_info:
-                    loc.click()
-                fc_info.value.set_files(resolved)
-                page.wait_for_timeout(800)
-                print(f"  本文中に画像を挿入しました: {resolved}")
-                return
-            except Exception:
-                continue
+    data = resolved.read_bytes()
+    b64 = base64.b64encode(data).decode("ascii")
+    mime = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
 
-    # フォールバック: エディタ内に直接 input[type=file] が隠れているパターン
-    try:
-        file_input = page.locator(
-            '[contenteditable="true"] input[type="file"], '
-            '.ProseMirror input[type="file"], .ql-editor input[type="file"]'
-        ).first
-        file_input.wait_for(state="attached", timeout=1500)
-        file_input.set_input_files(resolved)
-        page.wait_for_timeout(800)
-        print(f"  本文中に画像を挿入しました(直接input): {resolved}")
-        return
-    except Exception:
-        pass
-
-    raise RuntimeError(
-        f"本文中に画像を挿入するボタンが見つかりませんでした({resolved})。"
-        "NEW_POST_INLINE_IMAGE_BUTTON_TEXT を、エディタのツールバーの実際のアイコン/"
-        "文言に合わせて調整してください(--inspect の form.html でツールバー部分を確認)。"
-    )
+    ok = page.evaluate(TRIX_INSERT_FILE_JS, [b64, resolved.name, mime])
+    if not ok:
+        raise RuntimeError(
+            f"本文エディタ(trix-editor)が見つからず、画像を挿入できませんでした({resolved})。"
+            "本文入力欄の構造がTrixエディタでなくなっている可能性があります。"
+        )
+    # アップロード(非同期処理)が始まるのを少し待つ
+    page.wait_for_timeout(1500)
+    print(f"  本文中に画像を挿入しました(Trixエディタ insertFile): {resolved}")
 
 
 def fill_body(page, blocks: list[dict]) -> None:
@@ -345,7 +329,6 @@ def fill_body(page, blocks: list[dict]) -> None:
             page.keyboard.press("Enter")
         if block["type"] == "image":
             insert_inline_image(page, block["path"])
-            loc.click()  # 画像挿入操作でツールバー側にフォーカスが移った場合に本文へ戻す
         else:
             for run_text, bold, italic in block["runs"]:
                 type_run(page, run_text, bold, italic)
@@ -353,79 +336,70 @@ def fill_body(page, blocks: list[dict]) -> None:
 
 
 def set_header_image(page, image_path: str) -> None:
-    """記事一番上のヘッダー画像(アイキャッチ/サムネイル)をアップロードする。"""
+    """記事一番上のヘッダー(「メイン画像」)をアップロードする。
+    .editMainImageWrapper クリック→出てくるメニューの「画像をアップロード」クリック、
+    という2段階の操作(いずれも実際のHTML構造から確認済み)。
+    この後にクロップ(トリミング)確認モーダルが出る場合があり、その確定ボタンの文言は
+    未確認のため、よくありそうな候補から推測でクリックする(見つからなくても致命的
+    エラーにはせず、警告を出して続行する)。"""
     resolved = str(Path(image_path).resolve())
     if not Path(resolved).is_file():
         raise RuntimeError(f"ヘッダー画像ファイルが見つかりません: {resolved}")
 
-    for label_text in HEADER_IMAGE_LABEL_TEXT:
-        try:
-            label_loc = page.get_by_text(label_text, exact=False).first
-            label_loc.wait_for(state="visible", timeout=1500)
-        except Exception:
-            continue
+    wrapper = page.locator(HEADER_IMAGE_WRAPPER_SELECTOR).first
+    wrapper.wait_for(state="visible", timeout=5000)
+    wrapper.click()
 
-        container = label_loc.locator(
-            "xpath=ancestor::*[self::div or self::section or self::label][1]"
-        )
+    upload_item = page.get_by_text(HEADER_IMAGE_UPLOAD_MENU_TEXT, exact=False).first
+    upload_item.wait_for(state="visible", timeout=3000)
+    with page.expect_file_chooser(timeout=5000) as fc_info:
+        upload_item.click()
+    fc_info.value.set_files(resolved)
+    page.wait_for_timeout(1000)
+    print(f"  ヘッダー画像をアップロードしました: {resolved}")
+
+    for text in HEADER_IMAGE_CROP_CONFIRM_TEXT:
         try:
-            file_input = container.locator('input[type="file"]').first
-            file_input.wait_for(state="attached", timeout=1500)
-            file_input.set_input_files(resolved)
-            print(f"  ヘッダー画像を設定しました({label_text}周辺のinput): {resolved}")
-            return
-        except Exception:
-            pass
-        try:
-            with page.expect_file_chooser(timeout=3000) as fc_info:
-                container.click()
-            fc_info.value.set_files(resolved)
-            print(f"  ヘッダー画像を設定しました({label_text}クリック): {resolved}")
+            btn = page.get_by_role("button", name=re.compile(re.escape(text))).first
+            btn.wait_for(state="visible", timeout=2000)
+            btn.click()
+            print(f"  トリミング確認ダイアログを確定しました({text})")
+            page.wait_for_timeout(500)
             return
         except Exception:
             continue
-
-    raise RuntimeError(
-        f"ヘッダー画像のアップロード欄が見つかりませんでした({resolved})。"
-        "HEADER_IMAGE_LABEL_TEXT を実際のラベル文言に合わせて調整してください。"
-    )
+    print("  [警告] トリミング確認ダイアログの確定ボタンが見つかりませんでした"
+          "(そもそも出ていない可能性もあります)。ヘッダー画像が正しく設定されたか、"
+          "投稿完了後に手動でご確認ください。HEADER_IMAGE_CROP_CONFIRM_TEXT を実際の"
+          "文言に合わせて調整できます。", file=sys.stderr)
 
 
 def set_schedule(page, publish_at: datetime) -> None:
-    if not click_by_text_candidates(page, NEW_POST_SCHEDULE_TOGGLE_TEXT):
-        raise RuntimeError(
-            "「予約投稿」への切り替えが見つかりませんでした。"
-            "NEW_POST_SCHEDULE_TOGGLE_TEXT を実際の文言に合わせて調整してください。"
-        )
-    page.wait_for_timeout(500)
+    """予約投稿を有効化して日時を設定する。
+    #editContents_reservation (checkbox) をオンにすると #reservation_post_time
+    (type=datetime-local) が出現する構造(実際のHTML構造から確認済み)。"""
+    toggle_label = page.locator(SCHEDULE_TOGGLE_LABEL_SELECTOR).first
+    toggle_label.wait_for(state="visible", timeout=5000)
+    toggle_label.click()
 
-    dt_loc, dt_selector = find_first_locator(page, NEW_POST_SCHEDULE_DATETIME_SELECTORS, timeout_ms=2000)
-    if dt_loc:
-        dt_loc.fill(publish_at.strftime("%Y-%m-%dT%H:%M"))
-        print(f"  予約日時({dt_selector}): {publish_at}")
-        return
-
-    date_loc, date_selector = find_first_locator(page, NEW_POST_SCHEDULE_DATE_SELECTORS, timeout_ms=2000)
-    time_loc, time_selector = find_first_locator(page, NEW_POST_SCHEDULE_TIME_SELECTORS, timeout_ms=2000)
-    if date_loc and time_loc:
-        date_loc.fill(publish_at.strftime("%Y-%m-%d"))
-        time_loc.fill(publish_at.strftime("%H:%M"))
-        print(f"  予約日時({date_selector} / {time_selector}): {publish_at}")
-        return
-
-    raise RuntimeError(
-        "予約日時の入力欄が見つかりませんでした。NEW_POST_SCHEDULE_*_SELECTORS を"
-        "実際のフォーム構造に合わせて調整してください。"
-    )
+    dt_loc = page.locator(SCHEDULE_DATETIME_SELECTOR).first
+    dt_loc.wait_for(state="visible", timeout=3000)
+    dt_loc.fill(publish_at.strftime("%Y-%m-%dT%H:%M"))
+    print(f"  予約日時({SCHEDULE_DATETIME_SELECTOR}): {publish_at}")
 
 
-def submit_post(page, schedule: bool) -> None:
-    texts = SUBMIT_BUTTON_TEXT_SCHEDULE if schedule else SUBMIT_BUTTON_TEXT_PUBLISH
-    if not click_by_text_candidates(page, texts):
-        raise RuntimeError(
-            "送信ボタンが見つかりませんでした。SUBMIT_BUTTON_TEXT_SCHEDULE / "
-            "SUBMIT_BUTTON_TEXT_PUBLISH を実際のボタン文言に合わせて調整してください。"
-        )
+def submit_post(page) -> None:
+    """公開/予約ボタンを押す(予約投稿・即時公開のどちらでも同じボタン)。"""
+    try:
+        btn = page.locator(SUBMIT_BUTTON_SELECTOR).first
+        btn.wait_for(state="visible", timeout=3000)
+        btn.click()
+    except Exception:
+        if not click_by_text_candidates(page, SUBMIT_BUTTON_TEXT_FALLBACK):
+            raise RuntimeError(
+                "送信ボタンが見つかりませんでした。SUBMIT_BUTTON_SELECTOR / "
+                "SUBMIT_BUTTON_TEXT_FALLBACK を実際の構造に合わせて調整してください。"
+            )
     try:
         page.wait_for_load_state("networkidle", timeout=15000)
     except Exception:
@@ -528,11 +502,11 @@ def main() -> None:
             fill_body(page, blocks)
             if args.publish_at:
                 set_schedule(page, args.publish_at)
-                submit_post(page, schedule=True)
+                submit_post(page)
                 print(f"[完了] 予約投稿を送信しました(予約日時: {args.publish_at})。"
                       "サイト側の予約投稿一覧で内容をご確認ください。")
             else:
-                submit_post(page, schedule=False)
+                submit_post(page)
                 print("[完了] 投稿を送信しました。サイト側で公開状態をご確認ください。")
         except Exception as e:
             fail_dir = Path(args.inspect_out)
