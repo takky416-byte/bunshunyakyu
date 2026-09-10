@@ -6,3 +6,7 @@ markdownify>=0.11
 # 使うときだけ追加で必要:
 # pip install playwright
 # playwright install chromium
+
+# post_blog.py(ブログ自動投稿)を使う場合は必須:
+# pip install playwright
+# playwright install chromium

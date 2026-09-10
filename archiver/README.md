@@ -177,7 +177,7 @@ python archive_site.py --login-url https://yakyu.bunshun.jp/login \
 送信ボタンをクリックすることでログインします(要 Playwright)。
 
 ```bash
-python archive_site.py --login-url https://yakyu.bunshun.jp/login --browser-login \
+python archive_site.py --login-url https://yakyu.bunshun.jp/login \
     --list-url https://yakyu.bunshun.jp/blogs --infinite-scroll
 ```
 
@@ -204,6 +204,69 @@ python archive_site.py --login-url https://yakyu.bunshun.jp/login --browser-logi
 コメント欄が Facebook の `fb-comments` プラグインの場合、コメント本文はFacebook側の
 iframe内にあり、`--render` を使っても外部サイトから正規のAPI無しに全件を確実に
 取得できない場合があります(表示されている分のみ拾えることがありますが保証はできません)。
+
+## ブログ記事の自動投稿(予約投稿)
+
+`post_blog.py` を使うと、タイトル・本文・画像を指定して、yakyu.bunshun.jp の
+マイページに新規ブログ記事を自動投稿(予約投稿)できます。タイトル・本文・画像は
+ChatGPTなどで作成したものをファイル/ファイルパスとして渡す想定です。
+
+**注意:** 新規投稿フォームの実際のHTML構造(入力欄のname属性やクラス名、予約投稿の
+ボタン文言など)を、この開発環境からは確認できないまま作成しています。そのため
+`archive_site.py` の `CONTENT_SELECTORS` 等と同様に、`post_blog.py` 内の
+`NEW_POST_*_SELECTORS` はよくあるパターンからの推測です。**初回は必ず `--inspect`
+から試してください。**
+
+### セットアップ
+
+```bash
+pip install playwright
+playwright install chromium
+```
+
+### 0. まずはフォームの構造を確認する(初回・うまくいかないときに)
+
+```bash
+python post_blog.py --login-url https://yakyu.bunshun.jp/login --inspect
+```
+
+- ログイン後に新規投稿ページを開き、`archive/_new_post_inspect/form.html` と
+  `form.png` に保存します。
+- 自動入力がうまくいかない場合は、この `form.html` を見せてもらえれば、
+  実際の構造に合わせて `post_blog.py` 内のセレクタを調整します。
+  (投稿失敗時にも同じフォルダに `error_form.html` / `error_form.png` として
+  失敗時点の状態が自動保存されます。)
+
+### 1. 本文ファイルを用意する
+
+プレーンテキスト/Markdownで、段落は空行で区切ってください(`post_body.txt` など)。
+
+### 2. 予約投稿する
+
+```bash
+python post_blog.py --login-url https://yakyu.bunshun.jp/login \
+    --title "9/10 の試合を振り返って" \
+    --body-file post_body.txt \
+    --image image1.png --image image2.png \
+    --publish-at "2026-09-15 21:00"
+```
+
+- `--publish-at` の代わりに `--publish-now` を指定すると、予約せずすぐに公開します。
+- `--image` は複数回指定できます。
+- うまく動かない場合はブラウザ画面を見ながら確認できるよう `--headed` を付けてください。
+- ログイン情報は `archive_site.py` と同様、環境変数 `BUNSHUN_USERNAME` /
+  `BUNSHUN_PASSWORD` か対話入力で渡せます(コマンドライン引数への直書きは非推奨)。
+
+### 既知の制限
+
+- 本文は段落ごとにキー入力として流し込むため、Markdownの見出し記法(`#`など)や
+  太字(`**`)はそのまま文字として入力されます。エディタ側の自動変換に依存します。
+- 画像は最初に見つかった `input[type=file]` にまとめて設定します。エディタが
+  1枚ずつしか受け付けない、またはツールバー操作をしないと `input` が出現しない
+  構造の場合はうまく添付できない可能性があります。
+- 予約投稿の切り替え・日時入力・送信ボタンの検出はすべて文言/一般的な属性からの
+  推測です。実際の文言と異なる場合は `post_blog.py` 冒頭の
+  `NEW_POST_SCHEDULE_TOGGLE_TEXT` / `SUBMIT_BUTTON_TEXT_SCHEDULE` などを調整してください。
 
 ## 利用上の注意
 
