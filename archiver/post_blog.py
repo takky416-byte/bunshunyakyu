@@ -73,7 +73,7 @@ from datetime import datetime
 from pathlib import Path
 
 DEFAULT_LOGIN_URL = "https://yakyu.bunshun.jp/login"
-DEFAULT_NEW_POST_URL = "https://yakyu.bunshun.jp/mypage/blogs/new"
+DEFAULT_NEW_POST_URL = "https://yakyu.bunshun.jp/blogs/new"
 DEFAULT_INSPECT_DIR = Path("archive/_new_post_inspect")
 
 USER_AGENT = (
