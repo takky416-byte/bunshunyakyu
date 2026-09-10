@@ -453,7 +453,7 @@ def set_header_image(page, image_path: str) -> None:
     if confirmed:
         try:
             page.wait_for_function(
-                "() => document.querySelectorAll('img[src^=\"blob:\"]').length === 0",
+                "() => document.querySelectorAll('.editContents__photoimage--main img[src^=\"blob:\"], trix-editor img[src^=\"blob:\"]').length === 0",
                 timeout=45000,
             )
             print("  ヘッダー画像のアップロード完了を確認しました。")
@@ -486,10 +486,14 @@ def wait_for_uploads_to_finish(page, timeout_ms: int = 30000) -> None:
     """ヘッダー画像・本文中の画像のアップロードが完了する(一時的な blob: プレビューURL
     から実際のサーバーURLに置き換わる)まで待つ。実際の動作確認で、アップロードが
     完了しないうちに送信すると、サイト側がエラーも出さず黙って送信を無視することが
-    分かったため、送信前に必ず呼び出す。"""
+    分かったため、送信前に必ず呼び出す。
+    チェック対象はヘッダー画像(.editContents__photoimage--main)と本文エディタ
+    (trix-editor)の中の img だけに絞っている。ページ全体の img[src^="blob:"] を
+    見てしまうと、投稿フォームと無関係な要素(通知アイコンなど)がたまたま
+    blob: を使っていた場合に誤検知して、いつまでも完了しないことがあったため。"""
     try:
         page.wait_for_function(
-            "() => document.querySelectorAll('img[src^=\"blob:\"]').length === 0",
+            "() => document.querySelectorAll('.editContents__photoimage--main img[src^=\"blob:\"], trix-editor img[src^=\"blob:\"]').length === 0",
             timeout=timeout_ms,
         )
         print("  画像のアップロード完了を確認しました。")
