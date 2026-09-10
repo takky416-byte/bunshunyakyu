@@ -567,32 +567,64 @@ def click_submit_button(page, selector: str, text_fallback: list[str], label: st
         " return el ? el.value.includes('data-trix-attachment') : null; }"
     )
     print(f"  [診断] 送信直前のVue側本文に画像添付が含まれているか: {has_attachment_in_vue}")
+
+    # クリックした瞬間に何が起きているか(JSエラー・コンソール出力・実際に発生した
+    # ネットワークリクエスト)を自動で収集する。予約投稿/公開ボタンだけがクリック
+    # できても何も起きない(下書き保存は正常に動く)という現象の原因調査用。
+    console_messages: list[str] = []
+    page_errors: list[str] = []
+    requests_seen: list[str] = []
+
+    def _on_console(msg):
+        console_messages.append(f"[{msg.type}] {msg.text}")
+
+    def _on_pageerror(err):
+        page_errors.append(str(err))
+
+    def _on_request(req):
+        requests_seen.append(f"{req.method} {req.url}")
+
+    page.on("console", _on_console)
+    page.on("pageerror", _on_pageerror)
+    page.on("request", _on_request)
+
     try:
-        btn = page.locator(selector).first
-        btn.wait_for(state="visible", timeout=3000)
-        if btn.is_disabled():
-            print(f"  [警告] {label}ボタンがまだ無効(disabled)になっています。"
-                  "少し待ってから再確認します。", file=sys.stderr)
-            page.wait_for_timeout(1500)
-        if btn.is_disabled():
-            raise RuntimeError(
-                f"{label}ボタンが無効(disabled)のままクリックできませんでした。"
-                "タイトル/本文が空、または他の必須項目が未入力の可能性があります。"
-            )
-        btn.click(force=True)
-    except RuntimeError:
-        raise
-    except Exception:
-        if not click_by_text_candidates(page, text_fallback):
-            raise RuntimeError(
-                f"{label}ボタンが見つかりませんでした。セレクタ/文言候補を"
-                "実際の構造に合わせて調整してください。"
-            )
-    try:
-        page.wait_for_load_state("networkidle", timeout=15000)
-    except Exception:
-        pass
-    page.wait_for_timeout(1500)
+        try:
+            btn = page.locator(selector).first
+            btn.wait_for(state="visible", timeout=3000)
+            if btn.is_disabled():
+                print(f"  [警告] {label}ボタンがまだ無効(disabled)になっています。"
+                      "少し待ってから再確認します。", file=sys.stderr)
+                page.wait_for_timeout(1500)
+            if btn.is_disabled():
+                raise RuntimeError(
+                    f"{label}ボタンが無効(disabled)のままクリックできませんでした。"
+                    "タイトル/本文が空、または他の必須項目が未入力の可能性があります。"
+                )
+            btn.click(force=True)
+        except RuntimeError:
+            raise
+        except Exception:
+            if not click_by_text_candidates(page, text_fallback):
+                raise RuntimeError(
+                    f"{label}ボタンが見つかりませんでした。セレクタ/文言候補を"
+                    "実際の構造に合わせて調整してください。"
+                )
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+        page.wait_for_timeout(1500)
+    finally:
+        page.remove_listener("console", _on_console)
+        page.remove_listener("pageerror", _on_pageerror)
+        page.remove_listener("request", _on_request)
+        print(f"  [診断] {label}クリック後に発生したコンソール出力: "
+              f"{console_messages if console_messages else '(なし)'}")
+        print(f"  [診断] {label}クリック後に発生したJSエラー: "
+              f"{page_errors if page_errors else '(なし)'}")
+        print(f"  [診断] {label}クリック後に発生したネットワークリクエスト: "
+              f"{requests_seen if requests_seen else '(なし)'}")
 
     if "/blogs/new" in page.url:
         raise RuntimeError(
