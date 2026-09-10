@@ -66,8 +66,9 @@ force=True(重なりチェックを無視して強制的にクリック)で行�
     上記の記法から同じHTMLを組み立てて、Trixエディタが公式に提供している
     editor.insertHTML() API(リッチテキストを貼り付けたのと同じ処理)で挿入する
     仕組みのため、太字・斜体・下線・引用はキーボードショートカットの当て推量に
-    頼らず確実に反映されます。画像挿入はエディタのツールバーではなく、Trixの
-    editor.insertFile() API(ドラッグ&ドロップ/貼り付けと同じ経路)を使っています。
+    頼らず確実に反映されます。本文中への画像挿入は、実際にファイルをドラッグ&
+    ドロップしたのと同じ DragEvent(dragenter→dragover→drop)を発火させる
+    ことで行っています。
 
     本文とは別に、記事の一番上に出る「ヘッダー画像(アイキャッチ/サムネイル)」は
     --header-image で指定してください。
@@ -323,15 +324,27 @@ def insert_html_block(page, html: str) -> None:
         )
 
 
-TRIX_INSERT_FILE_JS = """
+TRIX_DROP_FILE_JS = """
 ([b64, filename, mime]) => {
     const el = document.querySelector('trix-editor');
-    if (!el || !el.editor) return false;
+    if (!el) return false;
     const byteChars = atob(b64);
     const bytes = new Uint8Array(byteChars.length);
     for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
     const file = new File([bytes], filename, { type: mime });
-    el.editor.insertFile(file);
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(file);
+    const rect = el.getBoundingClientRect();
+    const opts = {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+    };
+    el.dispatchEvent(new DragEvent('dragenter', opts));
+    el.dispatchEvent(new DragEvent('dragover', opts));
+    el.dispatchEvent(new DragEvent('drop', opts));
     return true;
 }
 """
@@ -339,9 +352,11 @@ TRIX_INSERT_FILE_JS = """
 
 def insert_inline_image(page, image_path: str) -> None:
     """本文エディタ(Trix)のカーソル位置に画像を挿入する。
-    Trixエディタが公式に提供している editor.insertFile(file) API を、実際に
-    ドラッグ&ドロップ/ペーストで画像を貼り付けたのと同じ経路で呼び出す
-    (ツールバーのボタンを推測でクリックするより確実)。"""
+    Trixエディタの editor.insertFile() というJS APIを直接呼ぶ方法は、この
+    サイトのアップロード開始トリガー(イベント)をうまく発火できず、
+    アップロードが完了しないまま止まることが実際の動作確認で分かったため、
+    「ファイルをドラッグ&ドロップした」状態を本物に近い形で再現する方式に
+    している(dragenter→dragover→dropの順にDragEventを発火する)。"""
     import base64
     import mimetypes
 
@@ -353,13 +368,13 @@ def insert_inline_image(page, image_path: str) -> None:
     b64 = base64.b64encode(data).decode("ascii")
     mime = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
 
-    ok = page.evaluate(TRIX_INSERT_FILE_JS, [b64, resolved.name, mime])
+    ok = page.evaluate(TRIX_DROP_FILE_JS, [b64, resolved.name, mime])
     if not ok:
         raise RuntimeError(
             f"本文エディタ(trix-editor)が見つからず、画像を挿入できませんでした({resolved})。"
             "本文入力欄の構造がTrixエディタでなくなっている可能性があります。"
         )
-    print(f"  本文中に画像を挿入しました(Trixエディタ insertFile): {resolved}")
+    print(f"  本文中に画像を挿入しました(ドラッグ&ドロップを再現): {resolved}")
     # 次の操作に進む前に、この画像のアップロードが完了する(blob:プレビューが
     # 実際のサーバーURLに置き換わる)まで待つ。複数枚挿入する場合、1枚ずつ完了を
     # 待たずに次を挿入すると、アップロード処理が競合して完了しないことがあるため。
