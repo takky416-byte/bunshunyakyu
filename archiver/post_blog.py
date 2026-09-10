@@ -89,11 +89,6 @@ DEFAULT_LOGIN_URL = "https://yakyu.bunshun.jp/login"
 DEFAULT_NEW_POST_URL = "https://yakyu.bunshun.jp/blogs/new"
 DEFAULT_INSPECT_DIR = Path("archive/_new_post_inspect")
 
-USER_AGENT = (
-    "Mozilla/5.0 (compatible; PersonalArchiveBot/1.0; "
-    "+for-personal-use-only)"
-)
-
 # 新規投稿フォームの各要素を探すための候補。
 # 2026-09時点で実際に確認できたHTML(yakyu.bunshun.jp/blogs/new, OSIRO基盤)を元にしている。
 # タイトルは <textarea id="title" placeholder="タイトル">
@@ -608,7 +603,11 @@ def main() -> None:
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not args.headed)
-        context = browser.new_context(user_agent=USER_AGENT)
+        # User-Agentはあえて上書きしない: 独自のUser-Agent(以前は名前に"Bot"を
+        # 含めていた)を名乗ると、サイト側のスパム/ボット対策に引っかかって、
+        # エラーも出さず投稿だけ静かに無視される可能性があるため、Playwrightに
+        # 同梱されている実際のChromiumの標準UAをそのまま使う。
+        context = browser.new_context()
         page = context.new_page()
 
         print(f"[ログイン] {args.login_url}")
