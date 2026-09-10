@@ -298,6 +298,10 @@ def type_run(page, text: str, bold: bool, italic: bool, underline: bool) -> None
         page.keyboard.press("Control+i")
     if underline:
         page.keyboard.press("Control+u")
+    if bold or italic or underline:
+        # Ctrl+B/I/UでトグルしたTrixの属性がタイプ開始前に反映されるよう少し待つ
+        # (反映前に打ち始めると、先頭の1文字だけ書式が抜けたり位置がずれることがある)。
+        page.wait_for_timeout(30)
     page.keyboard.type(text, delay=5)
     if underline:
         page.keyboard.press("Control+u")
@@ -392,11 +396,18 @@ def fill_body(page, blocks: list[dict]) -> None:
             "実際のフォーム構造(--inspect の form.html)に合わせて調整してください。"
         )
     loc.click(force=True)
+    page.wait_for_timeout(100)
     for i, block in enumerate(blocks):
         if i > 0:
             page.keyboard.press("Enter")
             page.keyboard.press("Enter")
         if block["type"] == "image":
+            # Trixはキー入力の反映をrequestAnimationFrameでまとめて行うため、
+            # 直前のキー入力の直後にJS側からdrop相当のイベントを発火すると、
+            # まだTrix内部で反映されていない文字が割り込んで挿入位置がずれる
+            # (実際に文字が欠落・移動する現象を確認済み)。画像挿入の前に
+            # 少し待って、直前の入力がTrixに反映されるのを待つ。
+            page.wait_for_timeout(200)
             insert_inline_image(page, block["path"])
         else:
             type_block(page, block)
@@ -485,7 +496,7 @@ def set_schedule(page, publish_at: datetime) -> None:
     print(f"  予約日時({SCHEDULE_DATETIME_SELECTOR}): {publish_at}")
 
 
-def wait_for_uploads_to_finish(page, timeout_ms: int = 30000) -> None:
+def wait_for_uploads_to_finish(page, timeout_ms: int = 12000) -> None:
     """ヘッダー画像・本文中の画像のアップロードが完了する(一時的な blob: プレビューURL
     から実際のサーバーURLに置き換わる)まで待つ。実際の動作確認で、アップロードが
     完了しないうちに送信すると、サイト側がエラーも出さず黙って送信を無視することが
