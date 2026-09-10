@@ -11,11 +11,13 @@ yakyu.bunshun.jp へのネットワークアクセスがポリシーでブロッ
 
 **フォーム構造について:**
 新規投稿ページ(https://yakyu.bunshun.jp/blogs/new)は実際のHTMLを確認済みで、
-タイトル欄(#title)・本文エディタ(Trixエディタ)・予約投稿の切り替え
+タイトル欄(#title)・本文エディタ(Trixエディタ)・ヘッダー画像アップロード後の
+トリミング確認ダイアログ(.trimingModal-btn .btnFill--medium)・予約投稿の切り替え
 (#editContents_reservation / #reservation_post_time)・送信ボタン
-(.subHeader__buttons button.btnFill--medium)はそのHTML構造に基づいて実装している。
-ただし**ヘッダー画像アップロード後に出る可能性があるクロップ(トリミング)確認モーダルの
-確定ボタンの文言だけは未確認で、`HEADER_IMAGE_CROP_CONFIRM_TEXT` は推測**。
+(.subHeader__buttons button.btnFill--medium)は、すべて実際のHTML構造に基づいて
+実装している。なお、このフォームにはヘッダー画像のトリミング用UI(croppaライブラリ)が
+大きな<canvas>を持っており、他の要素へのクリックを妨げることがあるため、クリック操作は
+force=True(重なりチェックを無視して強制的にクリック)で行っている。
 うまくいかない場合は `--inspect` で保存される `form.html` / `form.png`、または失敗時に
 自動保存される `error_form.html` / `error_form.png` を見せてもらえれば調整する。
 
@@ -109,11 +111,14 @@ NEW_POST_BODY_SELECTORS = [
 
 # ヘッダー(記事一番上の「メイン画像」)は、まず .editMainImageWrapper をクリックすると
 # ドロップダウンメニューが開き、その中の「画像をアップロード」をクリックするとファイル
-# 選択ダイアログが開く、という2段階の構造。クロップ(トリミング)モーダルが後に出る
-# 可能性があるが、その確定ボタンの文言は未確認のため推測(要調整)。
+# 選択ダイアログが開く、という2段階の構造。そのあとに出るトリミング確認モーダルの
+# 確定ボタンは <div class="trimingModal-btn"><div class="btnFill--medium">確定する</div>
+# ...という、<button>ではなくただのdivに文言が入っている構造であることを実際のHTMLで
+# 確認済み(get_by_role("button", ...)では見つからないので注意)。
 HEADER_IMAGE_WRAPPER_SELECTOR = ".editMainImageWrapper"
 HEADER_IMAGE_UPLOAD_MENU_TEXT = "画像をアップロード"
-HEADER_IMAGE_CROP_CONFIRM_TEXT = ["完了", "適用する", "この内容で保存", "トリミングして保存", "保存する", "OK", "適用"]
+HEADER_IMAGE_CROP_CONFIRM_SELECTOR = ".trimingModal-btn .btnFill--medium"
+HEADER_IMAGE_CROP_CONFIRM_TEXT_FALLBACK = ["確定する", "完了", "適用する", "保存する", "OK", "適用"]
 
 # 「予約投稿」トグルは type=checkbox の #editContents_reservation。
 # チェックを入れると type=datetime-local の #reservation_post_time が現れる。
@@ -219,7 +224,7 @@ def click_by_text_candidates(page, texts: list[str], timeout_ms: int = 3000) -> 
         try:
             loc = page.get_by_text(text, exact=False).first
             loc.wait_for(state="visible", timeout=timeout_ms)
-            loc.click()
+            loc.click(force=True)
             return True
         except Exception:
             continue
@@ -228,7 +233,7 @@ def click_by_text_candidates(page, texts: list[str], timeout_ms: int = 3000) -> 
         try:
             loc = page.get_by_role("button", name=re.compile(re.escape(text))).first
             loc.wait_for(state="visible", timeout=timeout_ms)
-            loc.click()
+            loc.click(force=True)
             return True
         except Exception:
             continue
@@ -290,7 +295,7 @@ def fill_title(page, title: str) -> None:
             "タイトル入力欄が見つかりませんでした。NEW_POST_TITLE_SELECTORS を"
             "実際のフォーム構造(--inspect の form.html)に合わせて調整してください。"
         )
-    loc.click()
+    loc.click(force=True)
     loc.fill(title)
     print(f"  タイトル入力欄: {selector}")
 
@@ -366,7 +371,7 @@ def fill_body(page, blocks: list[dict]) -> None:
             "本文入力欄が見つかりませんでした。NEW_POST_BODY_SELECTORS を"
             "実際のフォーム構造(--inspect の form.html)に合わせて調整してください。"
         )
-    loc.click()
+    loc.click(force=True)
     for i, block in enumerate(blocks):
         if i > 0:
             page.keyboard.press("Enter")
@@ -391,21 +396,31 @@ def set_header_image(page, image_path: str) -> None:
 
     wrapper = page.locator(HEADER_IMAGE_WRAPPER_SELECTOR).first
     wrapper.wait_for(state="visible", timeout=5000)
-    wrapper.click()
+    wrapper.click(force=True)
 
     upload_item = page.get_by_text(HEADER_IMAGE_UPLOAD_MENU_TEXT, exact=False).first
     upload_item.wait_for(state="visible", timeout=3000)
     with page.expect_file_chooser(timeout=5000) as fc_info:
-        upload_item.click()
+        upload_item.click(force=True)
     fc_info.value.set_files(resolved)
     page.wait_for_timeout(1000)
     print(f"  ヘッダー画像をアップロードしました: {resolved}")
 
-    for text in HEADER_IMAGE_CROP_CONFIRM_TEXT:
+    try:
+        btn = page.locator(HEADER_IMAGE_CROP_CONFIRM_SELECTOR).first
+        btn.wait_for(state="visible", timeout=3000)
+        btn.click(force=True)
+        print(f"  トリミング確認ダイアログを確定しました({HEADER_IMAGE_CROP_CONFIRM_SELECTOR})")
+        page.wait_for_timeout(500)
+        return
+    except Exception:
+        pass
+
+    for text in HEADER_IMAGE_CROP_CONFIRM_TEXT_FALLBACK:
         try:
-            btn = page.get_by_role("button", name=re.compile(re.escape(text))).first
+            btn = page.get_by_text(text, exact=False).first
             btn.wait_for(state="visible", timeout=2000)
-            btn.click()
+            btn.click(force=True)
             print(f"  トリミング確認ダイアログを確定しました({text})")
             page.wait_for_timeout(500)
             return
@@ -413,8 +428,8 @@ def set_header_image(page, image_path: str) -> None:
             continue
     print("  [警告] トリミング確認ダイアログの確定ボタンが見つかりませんでした"
           "(そもそも出ていない可能性もあります)。ヘッダー画像が正しく設定されたか、"
-          "投稿完了後に手動でご確認ください。HEADER_IMAGE_CROP_CONFIRM_TEXT を実際の"
-          "文言に合わせて調整できます。", file=sys.stderr)
+          "投稿完了後に手動でご確認ください。HEADER_IMAGE_CROP_CONFIRM_SELECTOR を実際の"
+          "構造に合わせて調整できます。", file=sys.stderr)
 
 
 def set_schedule(page, publish_at: datetime) -> None:
@@ -423,7 +438,7 @@ def set_schedule(page, publish_at: datetime) -> None:
     (type=datetime-local) が出現する構造(実際のHTML構造から確認済み)。"""
     toggle_label = page.locator(SCHEDULE_TOGGLE_LABEL_SELECTOR).first
     toggle_label.wait_for(state="visible", timeout=5000)
-    toggle_label.click()
+    toggle_label.click(force=True)
 
     dt_loc = page.locator(SCHEDULE_DATETIME_SELECTOR).first
     dt_loc.wait_for(state="visible", timeout=3000)
@@ -436,7 +451,7 @@ def submit_post(page) -> None:
     try:
         btn = page.locator(SUBMIT_BUTTON_SELECTOR).first
         btn.wait_for(state="visible", timeout=3000)
-        btn.click()
+        btn.click(force=True)
     except Exception:
         if not click_by_text_candidates(page, SUBMIT_BUTTON_TEXT_FALLBACK):
             raise RuntimeError(
