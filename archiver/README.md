@@ -348,6 +348,56 @@ python post_blog.py --login-url https://yakyu.bunshun.jp/login \
 (`--inspect-out` で指定したフォルダ、既定は `archive/_new_post_inspect/`)を
 見せてもらえれば、実際の構造に合わせて調整します。
 
+### 3. 複数記事をまとめて投稿する(`--batch`)
+
+`--title` / `--body-file` などを1記事ずつ指定する代わりに、記事のリストを書いた
+JSONファイルを `--batch` で渡すと、ログインを1回だけ行い、そのまま連続して
+複数記事を投稿できます。
+
+```bash
+python post_blog.py --login-url https://yakyu.bunshun.jp/login --batch posts.json
+```
+
+`posts.json` の例(1記事 = 1オブジェクト、配列で並べる):
+
+```json
+[
+  {
+    "title": "9/10 の試合を振り返って",
+    "header_image": "header1.jpg",
+    "body_file": "post1.txt",
+    "images": ["extra1.jpg"],
+    "publish_at": "2026-09-15 21:00"
+  },
+  {
+    "title": "9/11 の展望",
+    "body_file": "post2.txt",
+    "publish_now": true
+  },
+  {
+    "title": "下書きだけ残したい記事",
+    "body_file": "post3.txt",
+    "draft": true
+  }
+]
+```
+
+- 各記事オブジェクトに `title` と `body_file` は必須、`header_image` / `images`
+  (本文の最後にまとめて挿入する画像の配列)は省略可能です。
+- `draft` / `publish_now` / `publish_at` のうち、**必ずどれか1つだけ**を指定して
+  ください(単体実行時の `--draft` / `--publish-now` / `--publish-at` に対応します)。
+- `header_image` / `body_file` / `images` に書くパスは、`posts.json` 自身が
+  置かれているフォルダを基準に解決されます(実行時のカレントディレクトリに
+  依存しないので、記事とその画像を1フォルダにまとめて配布できます)。
+- `--batch` 使用時は `--title` / `--header-image` / `--body-file` / `--image` /
+  `--publish-at` / `--publish-now` / `--draft` は同時に指定できません(記事ごとの
+  設定はすべてJSON側に書きます)。
+- 1記事の投稿に失敗しても、そこで止まらず次の記事に進みます。全記事の処理が
+  終わった後に `OK`/`NG` の一覧をまとめて表示し、1件でも失敗があれば終了コードを
+  非0にします(失敗した記事のHTML/スクリーンショットは通常どおり
+  `error_form_<タイトル>.html` / `.png` として保存されます)。
+- 記事と記事の間には既定で3秒の間隔を空けます(`--batch-delay-seconds` で調整可能)。
+
 ## 利用上の注意
 
 - このツールは**個人的な保存(私的複製)**を目的としています。取得した記事や画像を

@@ -78,6 +78,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import os
 import re
 import sys
@@ -648,6 +649,129 @@ def parse_publish_at(value: str) -> datetime:
     )
 
 
+def load_batch(path: Path) -> list[dict]:
+    """--batch で指定するJSONファイル(記事のリスト)を読み込み、投稿ジョブの
+    リストに変換する。JSON中の相対パス(header_image/body_file/images)は、
+    実行時のカレントディレクトリではなく、このJSONファイル自身が置かれている
+    ディレクトリを基準に解決する(記事とその画像を1フォルダにまとめて配布
+    しやすくするため)。
+
+    JSON形式の例:
+        [
+          {
+            "title": "9/10 の試合を振り返って",
+            "header_image": "header1.jpg",
+            "body_file": "post1.txt",
+            "images": ["extra1.jpg"],
+            "publish_at": "2026-09-15 21:00"
+          },
+          {
+            "title": "別の記事",
+            "body_file": "post2.txt",
+            "draft": true
+          }
+        ]
+
+    draft / publish_now / publish_at のうち、必ずどれか1つだけを指定する。
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise SystemExit(f"--batch のJSONファイルを読み込めませんでした({path}): {e}") from e
+    if not isinstance(data, list):
+        raise SystemExit(f"--batch のJSONは記事の配列(リスト)である必要があります: {path}")
+
+    base_dir = path.parent
+
+    def resolve(p: str) -> str:
+        pp = Path(p)
+        return str(pp if pp.is_absolute() else (base_dir / pp))
+
+    jobs: list[dict] = []
+    for i, entry in enumerate(data):
+        if not isinstance(entry, dict):
+            raise SystemExit(f"--batch の{i}番目の要素がオブジェクトではありません: {entry!r}")
+        title = entry.get("title")
+        body_file = entry.get("body_file")
+        if not title:
+            raise SystemExit(f"--batch の{i}番目の記事に title がありません")
+        if not body_file:
+            raise SystemExit(f"--batch の{i}番目の記事({title})に body_file がありません")
+
+        modes = [k for k in ("draft", "publish_now", "publish_at") if entry.get(k)]
+        if len(modes) != 1:
+            raise SystemExit(
+                f"--batch の{i}番目の記事({title})には draft / publish_now / publish_at "
+                "のいずれか1つだけを指定してください"
+            )
+        mode = modes[0]
+        publish_at = parse_publish_at(str(entry["publish_at"])) if mode == "publish_at" else None
+
+        jobs.append({
+            "title": title,
+            "header_image": resolve(entry["header_image"]) if entry.get("header_image") else None,
+            "body_file": resolve(body_file),
+            "images": [resolve(p) for p in entry.get("images", [])],
+            "mode": mode,
+            "publish_at": publish_at,
+        })
+    return jobs
+
+
+def post_one_article(page, new_post_url: str, job: dict) -> None:
+    """1記事分のタイトル/画像/本文の入力〜送信を行う。"""
+    print(f"[新規投稿フォームを開く] {new_post_url}")
+    page.goto(new_post_url, wait_until="networkidle", timeout=30000)
+    page.wait_for_timeout(1000)
+
+    blocks = read_body_blocks(Path(job["body_file"]))
+    for image_path in job["images"]:
+        blocks.append({"type": "image", "path": image_path})
+
+    fill_title(page, job["title"])
+    if job["header_image"]:
+        set_header_image(page, job["header_image"])
+    fill_body(page, blocks)
+
+    if job["mode"] == "draft":
+        submit_draft(page)
+        print("[完了] 下書き保存しました。サイト側で内容をご確認ください。")
+    elif job["mode"] == "publish_at":
+        set_schedule(page, job["publish_at"])
+        submit_post(page)
+        print(f"[完了] 予約投稿を送信しました(予約日時: {job['publish_at']})。"
+              "サイト側の予約投稿一覧で内容をご確認ください。")
+    else:
+        submit_post(page)
+        print("[完了] 投稿を送信しました。サイト側で公開状態をご確認ください。")
+
+
+def run_job_with_error_capture(page, new_post_url: str, job: dict, inspect_out: Path) -> bool:
+    """post_one_article() を実行し、失敗した場合は失敗時点のHTML/スクリーン
+    ショットを保存した上でFalseを返す(--batch実行時に1件の失敗で全体を
+    止めないようにするため、例外はここで吸収する)。"""
+    try:
+        post_one_article(page, new_post_url, job)
+        return True
+    except Exception as e:
+        inspect_out.mkdir(parents=True, exist_ok=True)
+        safe_title = re.sub(r"[^\w.-]", "_", job["title"])[:50] or "untitled"
+        html_path = inspect_out / f"error_form_{safe_title}.html"
+        png_path = inspect_out / f"error_form_{safe_title}.png"
+        try:
+            html_path.write_text(page.content(), encoding="utf-8")
+        except Exception:
+            pass
+        try:
+            page.screenshot(path=str(png_path), full_page=True)
+        except Exception:
+            pass
+        print(f"[エラー] 「{job['title']}」の投稿に失敗しました: {e}", file=sys.stderr)
+        print(f"  失敗時点のHTML/スクリーンショットを {html_path} / {png_path} に"
+              "保存しました。共有してもらえればセレクタを調整します。", file=sys.stderr)
+        return False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--login-url", default=DEFAULT_LOGIN_URL, help="ログインページURL")
@@ -679,9 +803,23 @@ def main() -> None:
                         help="公開/予約はせず、下書き保存ボタンを押すだけにする"
                              "(予約投稿がうまくいかない場合の切り分け・代替手段用)")
 
+    parser.add_argument("--batch", help="複数記事をまとめて投稿するためのJSONファイル。"
+                                         "指定した場合、--title/--header-image/--body-file/"
+                                         "--image/--publish-at/--publish-now/--draft は使えません"
+                                         "(それぞれの記事ごとにJSON側で指定するため)")
+    parser.add_argument("--batch-delay-seconds", type=float, default=3.0,
+                         help="--batch で複数記事を投稿する際、1記事ごとの間に空ける秒数"
+                              "(既定: 3秒。サーバーに負荷をかけすぎないようにするため)")
+
     args = parser.parse_args()
 
-    if not args.inspect:
+    if args.batch:
+        if args.title or args.header_image or args.body_file or args.image \
+                or args.publish_at or args.publish_now or args.draft:
+            parser.error("--batch は --title/--header-image/--body-file/--image/"
+                          "--publish-at/--publish-now/--draft と同時に指定できません"
+                          "(記事ごとの設定はJSON側に書いてください)")
+    elif not args.inspect:
         if not args.title:
             parser.error("--title を指定してください")
         if not args.body_file:
@@ -743,49 +881,40 @@ def main() -> None:
             browser.close()
             return
 
-        print(f"[新規投稿フォームを開く] {args.new_post_url}")
-        page.goto(args.new_post_url, wait_until="networkidle", timeout=30000)
-        page.wait_for_timeout(1000)
+        if args.batch:
+            jobs = load_batch(Path(args.batch))
+        else:
+            jobs = [{
+                "title": args.title,
+                "header_image": args.header_image,
+                "body_file": args.body_file,
+                "images": args.image,
+                "mode": "draft" if args.draft else ("publish_at" if args.publish_at else "publish_now"),
+                "publish_at": args.publish_at,
+            }]
 
-        try:
-            blocks = read_body_blocks(Path(args.body_file))
-            for image_path in args.image:
-                blocks.append({"type": "image", "path": image_path})
+        inspect_out = Path(args.inspect_out)
+        results: list[tuple[str, bool]] = []
+        for i, job in enumerate(jobs, start=1):
+            if args.batch:
+                print(f"\n===== [{i}/{len(jobs)}] {job['title']} =====")
+            ok = run_job_with_error_capture(page, args.new_post_url, job, inspect_out)
+            results.append((job["title"], ok))
+            if args.batch and i < len(jobs) and args.batch_delay_seconds > 0:
+                page.wait_for_timeout(int(args.batch_delay_seconds * 1000))
 
-            fill_title(page, args.title)
-            if args.header_image:
-                set_header_image(page, args.header_image)
-            fill_body(page, blocks)
-            if args.draft:
-                submit_draft(page)
-                print("[完了] 下書き保存しました。サイト側で内容をご確認ください。")
-            elif args.publish_at:
-                set_schedule(page, args.publish_at)
-                submit_post(page)
-                print(f"[完了] 予約投稿を送信しました(予約日時: {args.publish_at})。"
-                      "サイト側の予約投稿一覧で内容をご確認ください。")
-            else:
-                submit_post(page)
-                print("[完了] 投稿を送信しました。サイト側で公開状態をご確認ください。")
-            if args.headed:
-                input("  ブラウザで結果を確認してください。Enterキーを押すと閉じます... ")
-        except Exception as e:
-            fail_dir = Path(args.inspect_out)
-            fail_dir.mkdir(parents=True, exist_ok=True)
-            (fail_dir / "error_form.html").write_text(page.content(), encoding="utf-8")
-            try:
-                page.screenshot(path=str(fail_dir / "error_form.png"), full_page=True)
-            except Exception:
-                pass
-            print(f"[エラー] {e}", file=sys.stderr)
-            print(f"  失敗時点のHTML/スクリーンショットを {fail_dir} に保存しました。"
-                  "共有してもらえればセレクタを調整します。", file=sys.stderr)
-            if args.headed:
-                input("  ブラウザで状況を確認してください。Enterキーを押すと閉じます... ")
-            browser.close()
-            sys.exit(1)
+        if args.headed:
+            input("  ブラウザで結果を確認してください。Enterキーを押すと閉じます... ")
 
         browser.close()
+
+        if args.batch:
+            print("\n===== 投稿結果 =====")
+            for title, ok in results:
+                print(f"  {'OK' if ok else 'NG'}: {title}")
+
+        if any(not ok for _, ok in results):
+            sys.exit(1)
 
 
 if __name__ == "__main__":
