@@ -348,11 +348,41 @@ python post_blog.py --login-url https://yakyu.bunshun.jp/login \
 (`--inspect-out` で指定したフォルダ、既定は `archive/_new_post_inspect/`)を
 見せてもらえれば、実際の構造に合わせて調整します。
 
-### 3. 複数記事をまとめて投稿する(`--batch`)
+### 3. 複数記事をまとめて投稿する
 
-`--title` / `--body-file` などを1記事ずつ指定する代わりに、記事のリストを書いた
-JSONファイルを `--batch` で渡すと、ログインを1回だけ行い、そのまま連続して
-複数記事を投稿できます。
+`--title` / `--body-file` などを1記事ずつ指定する代わりに、複数記事をまとめて
+一度に投稿する方法が2つあります。ログインは1回だけ行い、そのまま連続して
+投稿します。
+
+#### 3-a. フォルダで指定する(`--batch-dir`。JSONを書きたくない場合はこちら)
+
+記事ごとにフォルダを1つ作り、その中に `title.txt`(省略可)・`body.txt`・
+`header.*`(省略可)を置くだけです。JSONを書く必要はありません。
+
+```
+posts/
+  2026-09-10-recap/
+    title.txt      ← 1行目がタイトルになる(無ければフォルダ名がそのままタイトル)
+    body.txt       ← 本文(--body-file と同じ書き方。![](画像名)でこのフォルダ内の画像を挿入可)
+    header.jpg     ← ヘッダー画像(省略可。拡張子は問わない)
+  2026-09-11-preview/
+    body.txt
+```
+
+```bash
+python post_blog.py --login-url https://yakyu.bunshun.jp/login \
+    --batch-dir posts --draft
+```
+
+- `posts` フォルダ直下のサブフォルダを、フォルダ名の昇順で1記事ずつ処理します
+  (日付や連番をフォルダ名の頭に付けると投稿順をコントロールできます)。
+- 投稿方法(下書き/即時公開/予約投稿)は、JSON版と違って記事ごとではなく
+  `--draft` / `--publish-now` / `--publish-at` で**全記事共通**に指定します。
+  予約日時を記事ごとに変えたい場合は、下記のJSON版(`--batch`)を使ってください。
+- `--batch-dir` は `--title` / `--header-image` / `--body-file` / `--image` とは
+  同時に指定できません。
+
+#### 3-b. JSONで指定する(`--batch`。記事ごとに投稿方法や画像を細かく変えたい場合)
 
 ```bash
 python post_blog.py --login-url https://yakyu.bunshun.jp/login --batch posts.json
