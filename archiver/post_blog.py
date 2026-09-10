@@ -62,11 +62,12 @@ force=True(重なりチェックを無視して強制的にクリック)で行�
 
         > この記事は生成AIを活用して執筆しています。
 
-    実際に公開済みの記事のHTML構造(<strong>/<em>/<u>/<blockquote>)を確認したうえで、
-    上記の記法から同じHTMLを組み立てて、Trixエディタが公式に提供している
-    editor.insertHTML() API(リッチテキストを貼り付けたのと同じ処理)で挿入する
-    仕組みのため、太字・斜体・下線・引用はキーボードショートカットの当て推量に
-    頼らず確実に反映されます。本文中への画像挿入は、実際にファイルをドラッグ&
+    太字/斜体/下線は Ctrl+B・Ctrl+I・Ctrl+U のショートカットを使って切り替えながら
+    実際にキー入力し、引用はTrixツールバーの「引用」ボタンを押した状態で入力する
+    ことで反映しています(editor.insertHTML() のようにJS側からTrix/Vueの内部状態を
+    直接書き換える方式は、見た目上は正しく反映されても、その後の送信がエラーも
+    出さず効かなくなる現象が実際の動作確認で判明したため、本物のキー入力に近い
+    方式に統一しています)。本文中への画像挿入は、実際にファイルをドラッグ&
     ドロップしたのと同じ DragEvent(dragenter→dragover→drop)を発火させる
     ことで行っています。
 
@@ -82,7 +83,6 @@ import os
 import re
 import sys
 from datetime import datetime
-from html import escape
 from pathlib import Path
 
 DEFAULT_LOGIN_URL = "https://yakyu.bunshun.jp/login"
@@ -189,23 +189,6 @@ def read_body_blocks(body_file: Path) -> list[dict]:
     return blocks
 
 
-def render_run_html(text: str, bold: bool, italic: bool, underline: bool) -> str:
-    """1区間のテキストを、実際にTrixが保存する形式(<strong>/<em>/<u>)のHTMLに変換する。"""
-    html = escape(text).replace("\n", "<br>")
-    if underline:
-        html = f"<u>{html}</u>"
-    if italic:
-        html = f"<em>{html}</em>"
-    if bold:
-        html = f"<strong>{html}</strong>"
-    return html
-
-
-def render_block_html(block: dict) -> str:
-    html = "".join(render_run_html(*run) for run in block["runs"])
-    if block.get("quote"):
-        html = f"<blockquote>{html}</blockquote>"
-    return html
 
 
 def find_first_locator(page, selectors: list[str], timeout_ms: int = 5000):
@@ -301,32 +284,48 @@ def fill_title(page, title: str) -> None:
     print(f"  タイトル入力欄: {selector}")
 
 
-TRIX_INSERT_HTML_JS = """
-([html]) => {
-    const el = document.querySelector('trix-editor');
-    if (!el || !el.editor) return false;
-    el.editor.insertHTML(html);
-    // vue-trix 側の v-model="content.body" が同期するように、Trixの変更通知
-    // イベントを明示的に発火させておく(insertHTML() 自体がこれらのイベントを
-    // 発火するかどうかvue-trixラッパーの実装依存のため、念のため両方送る)。
-    el.dispatchEvent(new Event('trix-change', { bubbles: true }));
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    return true;
-}
-"""
+QUOTE_TOOLBAR_BUTTON_SELECTOR = 'button[data-trix-attribute="quote"]'
 
 
-def insert_html_block(page, html: str) -> None:
-    """本文エディタ(Trix)のカーソル位置にHTML断片を挿入する。
-    editor.insertHTML() はリッチテキストを貼り付けた場合と同じ処理を通るため、
-    <strong>/<em>/<u>/<blockquote> をキーボードショートカットの推測なしに
-    確実に反映できる(実際に公開済みの記事のHTML構造から、これらのタグで
-    保存されることを確認済み)。"""
-    ok = page.evaluate(TRIX_INSERT_HTML_JS, [html])
-    if not ok:
-        raise RuntimeError(
-            "本文エディタ(trix-editor)が見つからず、HTMLを挿入できませんでした。"
-        )
+def type_run(page, text: str, bold: bool, italic: bool, underline: bool) -> None:
+    """1つのテキスト区間を、必要ならCtrl+B / Ctrl+I / Ctrl+Uでトグルしながら
+    実際にキー入力する。editor.insertHTML() など、JS側からTrix/Vueの内部状態を
+    直接いじる方式は、見た目上は正しく反映されるにもかかわらず、その後の送信が
+    (エラーも出さず)効かなくなる現象が実際の動作確認で判明したため、本物の
+    キー入力に近い方式に統一している。"""
+    if bold:
+        page.keyboard.press("Control+b")
+    if italic:
+        page.keyboard.press("Control+i")
+    if underline:
+        page.keyboard.press("Control+u")
+    page.keyboard.type(text, delay=5)
+    if underline:
+        page.keyboard.press("Control+u")
+    if italic:
+        page.keyboard.press("Control+i")
+    if bold:
+        page.keyboard.press("Control+b")
+
+
+def type_block(page, block: dict) -> None:
+    """1つの段落ブロックを、必要なら引用(quote)のツールバーボタンを押した状態で
+    キー入力する。引用にはCtrl+*のようなキーボードショートカットが無いため、
+    Trixのツールバーの「引用」ボタンをオン/オフで挟む。"""
+    quote = block.get("quote", False)
+    if quote:
+        try:
+            page.locator(QUOTE_TOOLBAR_BUTTON_SELECTOR).first.click(force=True, timeout=2000)
+        except Exception:
+            print("  [警告] 引用(quote)ボタンが見つからず、引用として反映"
+                  "できなかった可能性があります。", file=sys.stderr)
+    for run_text, bold, italic, underline in block["runs"]:
+        type_run(page, run_text, bold, italic, underline)
+    if quote:
+        try:
+            page.locator(QUOTE_TOOLBAR_BUTTON_SELECTOR).first.click(force=True, timeout=2000)
+        except Exception:
+            pass
 
 
 TRIX_DROP_FILE_JS = """
@@ -401,7 +400,7 @@ def fill_body(page, blocks: list[dict]) -> None:
         if block["type"] == "image":
             insert_inline_image(page, block["path"])
         else:
-            insert_html_block(page, render_block_html(block))
+            type_block(page, block)
     print(f"  本文入力欄: {selector}({len(blocks)}ブロック)")
 
 
