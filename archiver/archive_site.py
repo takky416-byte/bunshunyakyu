@@ -180,9 +180,11 @@ def fetch_html_rendered(url: str, session: requests.Session | None = None) -> st
             if cookies:
                 context.add_cookies(cookies)
         page = context.new_page()
-        page.goto(url, wait_until="networkidle", timeout=30000)
+        # "networkidle" はチャット/通知機能などが裏で継続的に通信するサイトだと
+        # いつまで経っても達成されずタイムアウトしやすいため使わない。
+        page.goto(url, wait_until="domcontentloaded", timeout=45000)
         # 遅延読み込み画像・コメント/リアクションウィジェットの読み込みを待つため少し待機
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(3000)
         html = page.content()
         browser.close()
         return html
@@ -239,8 +241,8 @@ def fetch_list_html_infinite_scroll(
             if cookies:
                 context.add_cookies(cookies)
         page = context.new_page()
-        page.goto(url, wait_until="networkidle", timeout=30000)
-        page.wait_for_timeout(1000)
+        page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(1500)
 
         last_count = count_matching_links(page.content(), url, pattern)
         print(f"  現在 {last_count} 件のリンクを検出(スクロールして追加読み込みします)")
@@ -299,7 +301,8 @@ def browser_login(
         browser = p.chromium.launch()
         context = browser.new_context(user_agent=USER_AGENT)
         page = context.new_page()
-        page.goto(login_url, wait_until="networkidle", timeout=30000)
+        page.goto(login_url, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(1000)
 
         pw_selector = f'input[name="{password_field}"]' if password_field else 'input[type="password"]'
         pw_locator = page.locator(pw_selector).first
@@ -712,7 +715,7 @@ def archive_one(url: str, out_root: Path, session: requests.Session, index: dict
     print(f"[取得中] {url}")
     try:
         html = fetch_html(url, session, render=args.render)
-    except requests.RequestException as e:
+    except Exception as e:
         print(f"  [エラー] 取得失敗: {e}", file=sys.stderr)
         return
     article = parse_article(url, html)
@@ -729,12 +732,16 @@ def run_update_mode(args, session: requests.Session, out_root: Path, index: dict
     変わっている記事だけを保存する。一定件数連続で変化がなければ、それより下は
     既に最新の状態のはずとみなして巡回を打ち切る。"""
     print(f"[差分チェック] {args.list_url}(更新順の一覧と想定)")
-    if args.infinite_scroll:
-        list_html = fetch_list_html_infinite_scroll(
-            args.list_url, args.link_pattern, args.max_scrolls, args.scroll_pause_ms, session=session
-        )
-    else:
-        list_html = fetch_html(args.list_url, session, render=args.render)
+    try:
+        if args.infinite_scroll:
+            list_html = fetch_list_html_infinite_scroll(
+                args.list_url, args.link_pattern, args.max_scrolls, args.scroll_pause_ms, session=session
+            )
+        else:
+            list_html = fetch_html(args.list_url, session, render=args.render)
+    except Exception as e:
+        print(f"[エラー] 一覧ページ取得失敗: {e}", file=sys.stderr)
+        return
     links = discover_article_links(list_html, args.list_url, args.link_pattern)
     print(f"  一覧から {len(links)} 件のリンクを検出しました")
 
@@ -749,7 +756,7 @@ def run_update_mode(args, session: requests.Session, out_root: Path, index: dict
         print(f"[確認中 {checked}/{len(links)}] {link}")
         try:
             html = fetch_html(link, session, render=args.render)
-        except requests.RequestException as e:
+        except Exception as e:
             print(f"  [エラー] 取得失敗: {e}", file=sys.stderr)
             continue
 
@@ -781,12 +788,16 @@ def run_recheck_mode(args, session: requests.Session, out_root: Path, index: dic
     新規記事・本文編集・コメント/リアクション数の変化のいずれかがあった記事だけ保存し直す。
     早期打ち切りはせず、全件確認する(コメントが付かない本文だけの編集も漏れなく検知するため)。"""
     print(f"[全件チェック] {args.list_url}")
-    if args.infinite_scroll:
-        list_html = fetch_list_html_infinite_scroll(
-            args.list_url, args.link_pattern, args.max_scrolls, args.scroll_pause_ms, session=session
-        )
-    else:
-        list_html = fetch_html(args.list_url, session, render=args.render)
+    try:
+        if args.infinite_scroll:
+            list_html = fetch_list_html_infinite_scroll(
+                args.list_url, args.link_pattern, args.max_scrolls, args.scroll_pause_ms, session=session
+            )
+        else:
+            list_html = fetch_html(args.list_url, session, render=args.render)
+    except Exception as e:
+        print(f"[エラー] 一覧ページ取得失敗: {e}", file=sys.stderr)
+        return
     links = discover_article_links(list_html, args.list_url, args.link_pattern)
     print(f"  一覧から {len(links)} 件のリンクを検出しました")
 
@@ -800,7 +811,7 @@ def run_recheck_mode(args, session: requests.Session, out_root: Path, index: dic
         print(f"[確認中 {checked}/{len(links)}] {link}")
         try:
             html = fetch_html(link, session, render=args.render)
-        except requests.RequestException as e:
+        except Exception as e:
             print(f"  [エラー] 取得失敗: {e}", file=sys.stderr)
             continue
 
@@ -910,9 +921,13 @@ def main() -> None:
     if args.infinite_scroll:
         # 無限スクロール方式: ブラウザで実際にスクロールしながら記事リンクを集める
         print(f"[無限スクロール取得] {args.list_url}")
-        list_html = fetch_list_html_infinite_scroll(
-            args.list_url, args.link_pattern, args.max_scrolls, args.scroll_pause_ms, session=session
-        )
+        try:
+            list_html = fetch_list_html_infinite_scroll(
+                args.list_url, args.link_pattern, args.max_scrolls, args.scroll_pause_ms, session=session
+            )
+        except Exception as e:
+            print(f"[エラー] 一覧ページ取得失敗: {e}", file=sys.stderr)
+            return
         links = discover_article_links(list_html, args.list_url, args.link_pattern)
         print(f"  記事リンク {len(links)} 件見つかりました")
         for link in links:
@@ -928,7 +943,7 @@ def main() -> None:
         print(f"[一覧ページ {page_num}] {page_url}")
         try:
             list_html = fetch_html(page_url, session, render=args.render)
-        except requests.RequestException as e:
+        except Exception as e:
             print(f"  [エラー] 一覧ページ取得失敗: {e}", file=sys.stderr)
             break
 
