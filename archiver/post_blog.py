@@ -446,6 +446,23 @@ def set_schedule(page, publish_at: datetime) -> None:
     print(f"  予約日時({SCHEDULE_DATETIME_SELECTOR}): {publish_at}")
 
 
+def wait_for_uploads_to_finish(page, timeout_ms: int = 30000) -> None:
+    """ヘッダー画像・本文中の画像のアップロードが完了する(一時的な blob: プレビューURL
+    から実際のサーバーURLに置き換わる)まで待つ。実際の動作確認で、アップロードが
+    完了しないうちに送信すると、サイト側がエラーも出さず黙って送信を無視することが
+    分かったため、送信前に必ず呼び出す。"""
+    try:
+        page.wait_for_function(
+            "() => document.querySelectorAll('img[src^=\"blob:\"]').length === 0",
+            timeout=timeout_ms,
+        )
+        print("  画像のアップロード完了を確認しました。")
+    except Exception:
+        print("  [警告] 画像のアップロードが完了しないまま既定の待ち時間"
+              f"({timeout_ms}ms)を超えました。このまま送信すると失敗する"
+              "(反応がないまま何も保存されない)可能性があります。", file=sys.stderr)
+
+
 def submit_post(page) -> None:
     """公開/予約ボタンを押す(予約投稿・即時公開のどちらでも同じボタン)。
     ボタンがまだdisabled(バリデーション未通過)の場合はクリックしても何も起きず
@@ -579,6 +596,7 @@ def main() -> None:
             if args.header_image:
                 set_header_image(page, args.header_image)
             fill_body(page, blocks)
+            wait_for_uploads_to_finish(page)
             if args.publish_at:
                 set_schedule(page, args.publish_at)
                 submit_post(page)
