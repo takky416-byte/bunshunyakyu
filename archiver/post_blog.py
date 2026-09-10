@@ -412,6 +412,18 @@ def fill_body(page, blocks: list[dict]) -> None:
         "() => document.querySelectorAll('trix-editor figure[data-trix-attachment]').length"
     )
     print(f"  [診断] 本文入力完了時点のfigure要素数: {fig_count}")
+    # Vue側(content.body、送信される値そのもの)は trix-change イベントを
+    # 契機に同期される。画像アップロード完了のタイミングと、その後の
+    # editor.insertHTML() が発火するイベントのタイミングが前後すると、Vueが
+    # 画像挿入前の古い本文スナップショットを最後に採用してしまい、見た目上は
+    # 画像がDOMに残っているのに送信データには含まれない、という現象が実際に
+    # 発生した。送信前に明示的にtrix-changeイベントを発火させ、今のDOM内容で
+    # Vue側を強制的に再同期させる。
+    page.evaluate(
+        "() => { const el = document.querySelector('trix-editor');"
+        " if (el) el.dispatchEvent(new Event('trix-change', { bubbles: true })); }"
+    )
+    page.wait_for_timeout(200)
     print(f"  本文入力欄: {selector}({len(blocks)}ブロック)")
 
 
@@ -538,6 +550,11 @@ def click_submit_button(page, selector: str, text_fallback: list[str], label: st
     """公開/予約または下書き保存のボタンを押す共通処理。
     ボタンがまだdisabled(バリデーション未通過)の場合はクリックしても何も起きず
     「エラーは出ないが実際には保存されない」状態になるため、事前にチェックする。"""
+    has_attachment_in_vue = page.evaluate(
+        "() => { const el = document.querySelector('input[name=\"body\"]');"
+        " return el ? el.value.includes('data-trix-attachment') : null; }"
+    )
+    print(f"  [診断] 送信直前のVue側本文に画像添付が含まれているか: {has_attachment_in_vue}")
     try:
         btn = page.locator(selector).first
         btn.wait_for(state="visible", timeout=3000)
