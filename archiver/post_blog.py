@@ -385,10 +385,6 @@ def insert_inline_image(page, image_path: str) -> None:
     # 実際のサーバーURLに置き換わる)まで待つ。複数枚挿入する場合、1枚ずつ完了を
     # 待たずに次を挿入すると、アップロード処理が競合して完了しないことがあるため。
     wait_for_uploads_to_finish(page)
-    fig_count = page.evaluate(
-        "() => document.querySelectorAll('trix-editor figure[data-trix-attachment]').length"
-    )
-    print(f"  [診断] 画像挿入直後のfigure要素数: {fig_count}")
 
 
 def fill_body(page, blocks: list[dict]) -> None:
@@ -408,10 +404,6 @@ def fill_body(page, blocks: list[dict]) -> None:
             insert_inline_image(page, block["path"])
         else:
             insert_text_block(page, block)
-    fig_count = page.evaluate(
-        "() => document.querySelectorAll('trix-editor figure[data-trix-attachment]').length"
-    )
-    print(f"  [診断] 本文入力完了時点のfigure要素数: {fig_count}")
     # Vue側(content.body、実際に送信される値そのもの)が、見た目のDOM内容と
     # 食い違うことが実際に確認された(figureはDOM上に残っているのに、送信データ
     # には含まれない)。合成の trix-change イベントを発火する方法では直らな
