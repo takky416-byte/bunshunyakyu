@@ -359,9 +359,11 @@ def insert_inline_image(page, image_path: str) -> None:
             f"本文エディタ(trix-editor)が見つからず、画像を挿入できませんでした({resolved})。"
             "本文入力欄の構造がTrixエディタでなくなっている可能性があります。"
         )
-    # アップロード(非同期処理)が始まるのを少し待つ
-    page.wait_for_timeout(1500)
     print(f"  本文中に画像を挿入しました(Trixエディタ insertFile): {resolved}")
+    # 次の操作に進む前に、この画像のアップロードが完了する(blob:プレビューが
+    # 実際のサーバーURLに置き換わる)まで待つ。複数枚挿入する場合、1枚ずつ完了を
+    # 待たずに次を挿入すると、アップロード処理が競合して完了しないことがあるため。
+    wait_for_uploads_to_finish(page)
 
 
 def fill_body(page, blocks: list[dict]) -> None:
