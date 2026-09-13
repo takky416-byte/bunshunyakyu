@@ -433,10 +433,6 @@ def insert_raw_html(page, html: str) -> None:
         )
 
 
-def insert_text_block(page, block: dict) -> None:
-    insert_raw_html(page, render_block_html(block))
-
-
 TRIX_DROP_FILE_JS = """
 ([b64, filename, mime]) => {
     const el = document.querySelector('trix-editor');
@@ -504,21 +500,28 @@ def fill_body(page, blocks: list[dict]) -> None:
     loc.click(force=True)
     page.wait_for_timeout(100)
     for i, block in enumerate(blocks):
-        if i > 0:
-            # ブロック(article.txtの空行区切り段落)の間は、他の改行と同じ
-            # <br><br>をinsertHTML()で挿入して区切る。実際に公開済みの記事の
-            # 保存済みHTMLを確認したところ、段落ごとに<div>が分かれているのでは
-            # なく、ほぼ全体が<br><br>で区切られた1〜数個の<div>で構成されて
-            # いることが分かったため、この方式に合わせている。以前はここで
-            # Enterキーを物理的に押して新しい段落(<div>)を作っていたが、
-            # キー入力のタイミングがJS側のinsertHTML()呼び出しとずれて、
-            # 実際には何も区切られず全ブロックが1つに繋がってしまう不具合が
-            # 実際に発生したため、この方式は廃止した。
-            insert_raw_html(page, "<br><br>")
         if block["type"] == "image":
+            # 空のエディタにいきなり画像をドロップすると、添付そのものが
+            # 作られずに消えてしまう不具合が実際にあった(本文の一番最初が
+            # 画像の記事で確認)。実際に公開済みの記事の保存データでも、本文
+            # 最初の画像の前には必ずいくつか<br>が入っていたため、直前に
+            # 何もない場合(i==0)でも<br><br>を挿入してから画像をドロップする。
+            # ブロック間の区切りとしての<br><br>もここで兼ねる。
+            insert_raw_html(page, "<br><br>")
             insert_inline_image(page, block["path"])
         else:
-            insert_text_block(page, block)
+            # ブロック(article.txtの空行区切り段落)の間の区切りは、他の改行と
+            # 同じ<br><br>を使う。ただし、区切り用の<br><br>だけを単独で
+            # insertHTML()すると、挿入した時点でそれが本文の末尾になるため、
+            # 片方が自動的に取り除かれて<br>1個に潰れてしまう不具合が実際に
+            # あった(以前はEnterキーの物理打鍵で区切っていたが、キー入力の
+            # タイミングがJS側のinsertHTML()呼び出しとずれて全ブロックが1つに
+            # 繋がってしまう不具合があり、<br><br>方式に変えた際に今度はこの
+            # 潰れ方に変わった)。そのため、区切りの<br><br>は独立して挿入せず、
+            # 続くブロック本体のHTMLと同じ1回のinsertHTML()呼び出しに含める
+            # (常に何か実内容が後に続く状態にして、末尾と誤認されないようにする)。
+            prefix = "<br><br>" if i > 0 else ""
+            insert_raw_html(page, prefix + render_block_html(block))
     # Vue側(content.body、実際に送信される値そのもの)が、見た目のDOM内容と
     # 食い違うことが実際に確認された(figureはDOM上に残っているのに、送信データ
     # には含まれない)。合成の trix-change イベントを発火する方法では直らな
@@ -531,10 +534,16 @@ def fill_body(page, blocks: list[dict]) -> None:
             const editorEl = document.querySelector('trix-editor');
             const hiddenInput = document.querySelector('input[name="body"]');
             if (!editorEl || !hiddenInput) return false;
+            let html = editorEl.innerHTML;
+            // 引用(blockquote)を本文の最後に置くと、Trixが続きを入力できる
+            // ようにと空の段落(<p><br></p>)を自動的に末尾へ追加することが
+            // 実際にあった。見た目上は空行1つ増えるだけで実害は小さいが、
+            // 実際に公開済みの記事のデータには無かった余分な要素なので取り除く。
+            html = html.replace(/<p>\\s*<br>\\s*<\\/p>\\s*$/, '');
             const nativeSetter = Object.getOwnPropertyDescriptor(
                 window.HTMLInputElement.prototype, 'value'
             ).set;
-            nativeSetter.call(hiddenInput, editorEl.innerHTML);
+            nativeSetter.call(hiddenInput, html);
             hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
             return true;
         }"""
