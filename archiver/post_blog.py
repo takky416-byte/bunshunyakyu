@@ -55,10 +55,9 @@ force=True(重なりチェックを無視して強制的にクリック)で行�
     - **太字**・*斜体*・__下線__(旧記法)も後方互換のため引き続き使えるが、
       ChatGPT等に生成させる場合は __ が標準Markdownの太字と解釈され下線に
       ならないことがあるため、<b>/<i>/<u> タグを使うことを推奨する。
-    - <br> は「1段落の中で改行する」用途に対応しているが、Trixのinsert HTML挙動上、
-      期待した1行改行ではなく段落扱いの余分な空きになりレイアウトが崩れることが
-      実際にあった。プロフィール欄や関連項目の列挙のような箇条書き風の内容は、
-      <br>でつなげず、1項目=1段落(空行区切り)にする方が安全。
+    - <br> は「1段落の中で改行する」用途に対応している。
+    - 段落(空行区切り)ごとに、実際のブログでは空行1行分の間隔になる(以前は
+      2行分になってしまう不具合があったため修正済み)。
 
     例:
         <b><u>IT野球選手名鑑 #017</u></b>
@@ -272,7 +271,11 @@ def read_body_blocks(body_file: Path) -> list[dict]:
                     stripped_lines.append("")
                 else:
                     stripped_lines.append(line)
-            para = "\n".join(stripped_lines)
+            # 生の改行文字はHTML上ただの空白に潰れて見た目の改行にならないため、
+            # 引用の行区切りは<br>に変換しておく(空行代わりの単独">"だった行は
+            # 上で""に変換済みなので、その前後の連続する<br><br>が「1行分の
+            # 空き」として表示される)。
+            para = "<br>".join(stripped_lines)
         blocks.append({"type": "text", "runs": parse_inline_runs(para), "quote": quote})
     return blocks
 
@@ -489,7 +492,11 @@ def fill_body(page, blocks: list[dict]) -> None:
     page.wait_for_timeout(100)
     for i, block in enumerate(blocks):
         if i > 0:
-            page.keyboard.press("Enter")
+            # Trixは1回のEnterで新しい段落(<div>)を作り、段落間に既定の余白が
+            # 入るため、これ自体が「空行1行分」に相当する。以前はここでEnterを
+            # 2回押していたが、それだと空行が2行分になり、article.txt側の
+            # 意図(段落=空行1行区切り)よりブログ側の空きが増えてしまう不具合が
+            # 実際に確認されたため、1回に修正した。
             page.keyboard.press("Enter")
         if block["type"] == "image":
             insert_inline_image(page, block["path"])
