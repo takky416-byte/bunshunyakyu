@@ -357,16 +357,19 @@ python post_blog.py --login-url https://yakyu.bunshun.jp/login \
 #### 3-a. フォルダで指定する(`--batch-dir`。JSONを書きたくない場合はこちら)
 
 記事ごとにフォルダを1つ作り、その中に `title.txt`(省略可)・`body.txt`・
-`header.*`(省略可)を置くだけです。JSONを書く必要はありません。
+`header.*`(省略可)・`publish_at.txt`(省略可、記事ごとに予約日時を変えたい場合)を
+置くだけです。JSONを書く必要はありません。
 
 ```
 posts/
   2026-09-10-recap/
-    title.txt      ← 1行目がタイトルになる(無ければフォルダ名がそのままタイトル)
-    body.txt       ← 本文(--body-file と同じ書き方。![](画像名)でこのフォルダ内の画像を挿入可)
-    header.jpg     ← ヘッダー画像(省略可。拡張子は問わない)
+    title.txt        ← 1行目がタイトルになる(無ければフォルダ名がそのままタイトル)
+    body.txt         ← 本文(--body-file と同じ書き方。![](画像名)でこのフォルダ内の画像を挿入可)
+    header.jpg       ← ヘッダー画像(省略可。拡張子は問わない)
+    publish_at.txt   ← この記事だけの予約日時(省略可。1行目に "2026-09-15 21:00" のように書く)
   2026-09-11-preview/
     body.txt
+    publish_at.txt
 ```
 
 ```bash
@@ -376,9 +379,16 @@ python post_blog.py --login-url https://yakyu.bunshun.jp/login \
 
 - `posts` フォルダ直下のサブフォルダを、フォルダ名の昇順で1記事ずつ処理します
   (日付や連番をフォルダ名の頭に付けると投稿順をコントロールできます)。
-- 投稿方法(下書き/即時公開/予約投稿)は、JSON版と違って記事ごとではなく
-  `--draft` / `--publish-now` / `--publish-at` で**全記事共通**に指定します。
-  予約日時を記事ごとに変えたい場合は、下記のJSON版(`--batch`)を使ってください。
+- **記事ごとに違う予約日時にしたい場合**は、そのフォルダに `publish_at.txt` を
+  置いて1行目に日時を書いてください。そのフォルダは(コマンドラインの指定に
+  関係なく)必ずその日時で予約投稿になります。
+- `publish_at.txt` が無いフォルダには、コマンドラインの
+  `--draft` / `--publish-now` / `--publish-at` で指定した**既定の投稿方法**が
+  使われます。**全フォルダに `publish_at.txt` がある場合は、コマンドライン側の
+  指定自体を省略できます**(例: `--batch-dir posts` だけでOK)。
+- 一部のフォルダにだけ `publish_at.txt` が無く、コマンドラインでも
+  `--draft` / `--publish-now` / `--publish-at` を指定していない場合はエラーに
+  なり、どのフォルダが足りないか教えてくれます。
 - `--batch-dir` は `--title` / `--header-image` / `--body-file` / `--image` とは
   同時に指定できません。
 

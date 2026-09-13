@@ -724,22 +724,28 @@ def load_batch(path: Path) -> list[dict]:
     return jobs
 
 
-def load_batch_dir(path: Path, mode: str, publish_at: datetime | None) -> list[dict]:
+def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: datetime | None) -> list[dict]:
     """--batch-dir で指定したフォルダの直下にある各サブフォルダを、1記事分の
     設定として読み込む。JSONを書く手間を省くための単純なフォルダ規約:
 
         posts/
           2026-09-10-game-recap/
-            title.txt   (省略可。無ければフォルダ名をそのままタイトルにする)
+            title.txt        (省略可。無ければフォルダ名をそのままタイトルにする)
             body.txt または body.md (必須)
-            header.*    (省略可。ヘッダー画像。拡張子は問わない)
+            header.*         (省略可。ヘッダー画像。拡張子は問わない)
+            publish_at.txt   (省略可。この記事だけ個別の予約日時にしたい場合。
+                               1行目に '2026-09-15 21:00' のように書く)
 
     本文中に差し込む画像は、--body-file と同じく本文ファイル内に
     ![alt](画像ファイル名) と書けばよく(そのフォルダを基準にパスが解決される)、
     フォルダ名の昇順で処理するので、日付や連番をフォルダ名の頭に付けると
-    投稿順をコントロールしやすい。draft/publish_now/publish_atの選択は
-    (JSON版の--batchと違って)記事ごとではなく、コマンドラインの
-    --draft/--publish-now/--publish-at で全記事共通に指定する。"""
+    投稿順をコントロールしやすい。
+
+    投稿方法(下書き/即時公開/予約投稿)は、`publish_at.txt` があるフォルダは
+    そこに書かれた日時で必ず予約投稿になる。無いフォルダは、コマンドラインの
+    --draft/--publish-now/--publish-at (default_mode/default_publish_at) を
+    既定値として使う。全フォルダに publish_at.txt がある場合は、コマンドライン側の
+    --draft/--publish-now/--publish-at は省略できる。"""
     if not path.is_dir():
         raise SystemExit(f"--batch-dir に指定したパスがフォルダではありません: {path}")
 
@@ -766,6 +772,22 @@ def load_batch_dir(path: Path, mode: str, publish_at: datetime | None) -> list[d
             raise SystemExit(f"{d} に body.txt(または body.md)が見つかりません")
 
         header_candidates = sorted(d.glob("header.*"))
+
+        publish_at_file = d / "publish_at.txt"
+        if publish_at_file.is_file():
+            lines = [line.strip() for line in publish_at_file.read_text(encoding="utf-8").splitlines()]
+            value = next((line for line in lines if line), None)
+            if not value:
+                raise SystemExit(f"{publish_at_file} が空です(予約日時を1行目に書いてください)")
+            mode, publish_at = "publish_at", parse_publish_at(value)
+        elif default_mode is not None:
+            mode, publish_at = default_mode, default_publish_at
+        else:
+            raise SystemExit(
+                f"{d} に publish_at.txt が無く、--draft/--publish-now/--publish-at も"
+                "指定されていません。この記事フォルダに publish_at.txt を置くか、"
+                "コマンドラインで既定の投稿方法を指定してください。"
+            )
 
         jobs.append({
             "title": title,
@@ -872,8 +894,11 @@ def main() -> None:
                               "直下の各サブフォルダを1記事として扱い、"
                               "title.txt(省略可、無ければフォルダ名がタイトル)・"
                               "body.txt(またはbody.md)・header.*(省略可)を読む。"
-                              "--draft/--publish-now/--publish-at を全記事共通の投稿方法として"
-                              "指定してください")
+                              "記事ごとに違う予約日時にしたい場合は、そのフォルダに"
+                              "publish_at.txt を置いて1行目に日時を書く(例: '2026-09-15 21:00')。"
+                              "publish_at.txt が無いフォルダには --draft/--publish-now/"
+                              "--publish-at で指定した既定の投稿方法が使われる"
+                              "(全フォルダに publish_at.txt がある場合は省略可)")
     parser.add_argument("--batch-delay-seconds", type=float, default=3.0,
                          help="--batch/--batch-dir で複数記事を投稿する際、1記事ごとの間に"
                               "空ける秒数(既定: 3秒。サーバーに負荷をかけすぎないようにするため)")
@@ -893,9 +918,10 @@ def main() -> None:
         if args.title or args.header_image or args.body_file or args.image:
             parser.error("--batch-dir は --title/--header-image/--body-file/--image と"
                           "同時に指定できません(記事ごとの設定はフォルダ側に書いてください)")
-        if not args.publish_at and not args.publish_now and not args.draft:
-            parser.error("--publish-at か --publish-now か --draft のいずれかを指定してください"
-                          "(--batch-dir 内の全記事に共通で適用されます)")
+        # --draft/--publish-now/--publish-at はここでは必須にしない: 各記事フォルダに
+        # publish_at.txt を置けば記事ごとに個別の予約日時にできるため、全フォルダに
+        # publish_at.txt がある場合はコマンドライン側を省略できる(足りない場合は
+        # load_batch_dir() が該当フォルダを指摘してエラーにする)。
     elif not args.inspect:
         if not args.title:
             parser.error("--title を指定してください")
@@ -962,8 +988,15 @@ def main() -> None:
         if args.batch:
             jobs = load_batch(Path(args.batch))
         elif args.batch_dir:
-            mode = "draft" if args.draft else ("publish_at" if args.publish_at else "publish_now")
-            jobs = load_batch_dir(Path(args.batch_dir), mode, args.publish_at)
+            if args.draft:
+                default_mode = "draft"
+            elif args.publish_now:
+                default_mode = "publish_now"
+            elif args.publish_at:
+                default_mode = "publish_at"
+            else:
+                default_mode = None
+            jobs = load_batch_dir(Path(args.batch_dir), default_mode, args.publish_at)
         else:
             jobs = [{
                 "title": args.title,
