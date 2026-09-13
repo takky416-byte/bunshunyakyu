@@ -413,21 +413,28 @@ def render_block_html(block: dict) -> str:
     return inner
 
 
-def insert_text_block(page, block: dict) -> None:
-    """1つの段落ブロックを、Trix本体のJS API editor.insertHTML() で挿入する。
+def insert_raw_html(page, html: str) -> None:
+    """Trix本体のJS API editor.insertHTML() でHTML文字列をそのまま挿入する共通処理。
     Ctrl+B/Ctrl+I/Ctrl+Uをトグルしながら実際にキー入力する方式は、Trixの内部状態
     への反映タイミングと合わずに文字の欠落・移動や書式の混線が実際に発生することが
     判明したため、この方式に統一した(以前「JS側から直接書き換えると送信が効かなく
     なる」という仮説でキー入力方式に切り替えたが、その後の検証でキー入力方式に
     変えても送信の問題は直らなかったため、この仮説は誤りだったと判断している。
     insertHTML方式で生成されるHTML自体は、実際の送信データ(hidden inputのvalue)で
-    正しい内容になっていることを確認済み)。"""
-    html = render_block_html(block)
+    正しい内容になっていることを確認済み)。段落間の区切りも、この同じ仕組みで
+    <br><br>を挿入することで実現している(後述のfill_body参照。以前はEnterキーの
+    物理的な打鍵で段落間を区切っていたが、実際の送信結果を確認したところ、
+    キー入力のタイミングがずれて全ブロックが1つに繋がってしまう不具合が実際に
+    発生したため、他の改行と同じ<br><br>挿入方式に統一した)。"""
     ok = page.evaluate(TRIX_INSERT_HTML_JS, [html])
     if not ok:
         raise RuntimeError(
             "本文エディタ(trix-editor)が見つからず、テキストを挿入できませんでした。"
         )
+
+
+def insert_text_block(page, block: dict) -> None:
+    insert_raw_html(page, render_block_html(block))
 
 
 TRIX_DROP_FILE_JS = """
@@ -498,12 +505,16 @@ def fill_body(page, blocks: list[dict]) -> None:
     page.wait_for_timeout(100)
     for i, block in enumerate(blocks):
         if i > 0:
-            # Trixは1回のEnterで新しい段落(<div>)を作り、段落間に既定の余白が
-            # 入るため、これ自体が「空行1行分」に相当する。以前はここでEnterを
-            # 2回押していたが、それだと空行が2行分になり、article.txt側の
-            # 意図(段落=空行1行区切り)よりブログ側の空きが増えてしまう不具合が
-            # 実際に確認されたため、1回に修正した。
-            page.keyboard.press("Enter")
+            # ブロック(article.txtの空行区切り段落)の間は、他の改行と同じ
+            # <br><br>をinsertHTML()で挿入して区切る。実際に公開済みの記事の
+            # 保存済みHTMLを確認したところ、段落ごとに<div>が分かれているのでは
+            # なく、ほぼ全体が<br><br>で区切られた1〜数個の<div>で構成されて
+            # いることが分かったため、この方式に合わせている。以前はここで
+            # Enterキーを物理的に押して新しい段落(<div>)を作っていたが、
+            # キー入力のタイミングがJS側のinsertHTML()呼び出しとずれて、
+            # 実際には何も区切られず全ブロックが1つに繋がってしまう不具合が
+            # 実際に発生したため、この方式は廃止した。
+            insert_raw_html(page, "<br><br>")
         if block["type"] == "image":
             insert_inline_image(page, block["path"])
         else:
