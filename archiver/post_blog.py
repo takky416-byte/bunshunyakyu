@@ -149,13 +149,31 @@ def get_credentials(args) -> tuple[str, str]:
 
 
 INLINE_IMAGE_LINE_RE = re.compile(r'^!\[[^\]]*\]\(([^)]+)\)$')
+# ChatGPT等が ![](img1.jpg) の記法を忘れ、ファイル名だけを1行で書いてしまうことが
+# 実際にあったため、拡張子から画像だとわかるファイル名だけの行も画像指示として救済する。
+BARE_IMAGE_LINE_RE = re.compile(
+    r'^[^\s![\]()]+\.(?:jpe?g|png|gif|webp|bmp|svg)$', re.IGNORECASE
+)
 INLINE_TOKEN_RE = re.compile(r'(\*\*|__|\*|_)')
+# ChatGPT等が強調のつもりで **** (4つ以上のアスタリスク)のような非標準の記法を
+# 使うことが実際にあり、そのままだとトグルが偶数回効いて逆に無装飾になってしまう
+# ため、3つ以上連続するアスタリスク/アンダースコアは正規の **(太字)/*(斜体)の
+# 組み合わせとして扱えるよう、4つ以上は2つに正規化しておく(3つは**+*の
+# 組み合わせ=太字+斜体として元々正しく解釈されるため、そのままにする)。
+EXCESS_MARKER_RE = re.compile(r'(\*{4,}|_{4,})')
+
+
+def _normalize_excess_markers(text: str) -> str:
+    def repl(m: re.Match) -> str:
+        return m.group(0)[:2]
+    return EXCESS_MARKER_RE.sub(repl, text)
 
 
 def parse_inline_runs(text: str) -> list[tuple[str, bool, bool, bool]]:
     """段落中の **太字** / *斜体*・_斜体_ / __下線__ 記法を、トグル方式で
     (テキスト, bold, italic, underline) の並びに分解する。**__組み合わせ__** のような
     入れ子(太字+下線など)も、単純なトグルの積み重ねとして扱えるので対応できる。"""
+    text = _normalize_excess_markers(text)
     bold = italic = underline = False
     runs: list[tuple[str, bool, bool, bool]] = []
     for tok in INLINE_TOKEN_RE.split(text):
@@ -175,9 +193,11 @@ def parse_inline_runs(text: str) -> list[tuple[str, bool, bool, bool]]:
 def read_body_blocks(body_file: Path) -> list[dict]:
     """本文ファイルを、段落(文字装飾つき)と画像挿入指示のブロック列に変換する。
     - 空行区切りの段落: **太字** / *斜体*・_斜体_ / __下線__ をサポート(組み合わせ可)
-    - 画像だけの行(1行が丸ごと ![alt](path) の形): その位置に画像を挿入する指示として扱う
-      (相対パスは実行時のカレントディレクトリではなく、この本文ファイル自身が
-      置かれているディレクトリを基準に解決する)
+    - 画像だけの行(1行が丸ごと ![alt](path) の形、または拡張子から画像だとわかる
+      ファイル名だけの行): その位置に画像を挿入する指示として扱う(ChatGPT等が
+      ![]()記法を忘れてファイル名だけを書いてしまうことがあるための救済)。
+      相対パスは実行時のカレントディレクトリではなく、この本文ファイル自身が
+      置かれているディレクトリを基準に解決する。
     - 行頭が "> " の段落: 引用(blockquote)として扱う
     """
     text = body_file.read_text(encoding="utf-8-sig")
@@ -186,8 +206,9 @@ def read_body_blocks(body_file: Path) -> list[dict]:
     blocks: list[dict] = []
     for para in paragraphs:
         m = INLINE_IMAGE_LINE_RE.match(para)
-        if m:
-            image_path = Path(m.group(1))
+        image_ref = m.group(1) if m else (para if BARE_IMAGE_LINE_RE.match(para) else None)
+        if image_ref is not None:
+            image_path = Path(image_ref)
             if not image_path.is_absolute():
                 image_path = base_dir / image_path
             blocks.append({"type": "image", "path": str(image_path)})
