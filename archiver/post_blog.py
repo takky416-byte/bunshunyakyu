@@ -166,8 +166,15 @@ BARE_IMAGE_LINE_RE = re.compile(
 # HTMLタグに統一している(ChatGPT等は明示的なHTMLタグであれば素直にそのまま
 # 出力できるため、Markdown側の「独自ルール」を誤って上書きされにくい)。
 INLINE_TOKEN_RE = re.compile(
-    r'(\*\*|__|\*|_|</?b>|</?i>|</?u>)', re.IGNORECASE
+    r'(\*\*|__|\*|_|</?b>|</?i>|</?u>|<br\s*/?>)', re.IGNORECASE
 )
+# <br> は改行位置の目印として、実際のテキストには絶対出てこない値に置き換えて
+# runsの中を通し、最終的なHTML組み立て時(render_run_html)に本物の<br>タグに
+# 戻す(段落内の生の改行文字は、HTMLとしてはただの空白に潰れてしまい実際の
+# 改行にならないため、本文中で改行したい場合は<br>を明示的に使ってもらう必要が
+# あり、ChatGPT等がそのように出力することが実際にあった)。
+BR_MARKER = "\x00BR\x00"
+BR_TOKEN_RE = re.compile(r'<br\s*/?>', re.IGNORECASE)
 # ChatGPT等が強調のつもりで **** (4つ以上のアスタリスク)のような非標準の記法を
 # 使うことが実際にあり、そのままだとトグルが偶数回効いて逆に無装飾になってしまう
 # ため、3つ以上連続するアスタリスク/アンダースコアは正規の **(太字)/*(斜体)の
@@ -211,6 +218,8 @@ def parse_inline_runs(text: str) -> list[tuple[str, bool, bool, bool]]:
             underline = True
         elif tok_lower == "</u>":
             underline = False
+        elif BR_TOKEN_RE.fullmatch(tok):
+            runs.append((BR_MARKER, bold, italic, underline))
         else:
             runs.append((tok, bold, italic, underline))
     return runs
@@ -242,7 +251,18 @@ def read_body_blocks(body_file: Path) -> list[dict]:
             continue
         quote = para.startswith("> ")
         if quote:
-            para = para[2:]
+            # 引用が複数行にわたり、継続行の先頭にも "> "(または空行代わりの
+            # 単独の ">")が付いている書き方をChatGPT等がすることが実際にあった。
+            # 先頭行だけでなく、各行の "> "/">" を取り除く。
+            stripped_lines = []
+            for line in para.split("\n"):
+                if line.startswith("> "):
+                    stripped_lines.append(line[2:])
+                elif line == ">":
+                    stripped_lines.append("")
+                else:
+                    stripped_lines.append(line)
+            para = "\n".join(stripped_lines)
         blocks.append({"type": "text", "runs": parse_inline_runs(para), "quote": quote})
     return blocks
 
@@ -355,6 +375,8 @@ TRIX_INSERT_HTML_JS = """
 def render_run_html(text: str, bold: bool, italic: bool, underline: bool) -> str:
     """1つのテキスト区間を、実際のTrix出力(<strong><em><u>...)と同じ入れ子順で
     HTML化する。"""
+    if text == BR_MARKER:
+        return "<br>"
     html = escape(text)
     if underline:
         html = f"<u>{html}</u>"
