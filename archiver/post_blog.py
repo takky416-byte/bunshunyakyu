@@ -609,11 +609,22 @@ def click_submit_button(page, selector: str, text_fallback: list[str], label: st
                     f"{label}ボタンが見つかりませんでした。セレクタ/文言候補を"
                     "実際の構造に合わせて調整してください。"
                 )
+        # 予約投稿/公開ボタンはクリック後に confirm() ダイアログが挟まる
+        # (dialogの承認はこちらのハンドラが非同期に行う)ため、networkidle判定が
+        # 実際の遷移が始まる"前"の一瞬の静けさで満たされてしまい、その後の固定
+        # 待機(1500ms)だけではURL変化(/blogs/new からの遷移)が間に合わない
+        # ことがある(実際には投稿に成功しているのに、このスクリプトだけが
+        # 「まだ新規投稿ページのまま」と誤判定して失敗扱いする不具合が発生した)。
+        # そのため、まずURLが実際に変わるまで能動的に待つ。
         try:
-            page.wait_for_load_state("networkidle", timeout=15000)
+            page.wait_for_url(lambda url: "/blogs/new" not in url, timeout=15000)
         except Exception:
             pass
-        page.wait_for_timeout(1500)
+        try:
+            page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            pass
+        page.wait_for_timeout(500)
     finally:
         page.remove_listener("console", _on_console)
         page.remove_listener("pageerror", _on_pageerror)
