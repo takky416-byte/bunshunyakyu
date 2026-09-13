@@ -55,6 +55,10 @@ force=True(重なりチェックを無視して強制的にクリック)で行�
     - **太字**・*斜体*・__下線__(旧記法)も後方互換のため引き続き使えるが、
       ChatGPT等に生成させる場合は __ が標準Markdownの太字と解釈され下線に
       ならないことがあるため、<b>/<i>/<u> タグを使うことを推奨する。
+    - <br> は「1段落の中で改行する」用途に対応しているが、Trixのinsert HTML挙動上、
+      期待した1行改行ではなく段落扱いの余分な空きになりレイアウトが崩れることが
+      実際にあった。プロフィール欄や関連項目の列挙のような箇条書き風の内容は、
+      <br>でつなげず、1項目=1段落(空行区切り)にする方が安全。
 
     例:
         <b><u>IT野球選手名鑑 #017</u></b>
@@ -591,22 +595,46 @@ def set_schedule(page, publish_at: datetime) -> None:
     print(f"  予約日時({SCHEDULE_DATETIME_SELECTOR}): {publish_at}")
 
 
-def set_tags(page, tags: list[str]) -> None:
+def set_tags(page, tags: list[str], inspect_out: Path | None = None) -> None:
     """新規投稿フォームの「興味関心タグ」を設定する。「おすすめの興味関心タグ」
     欄に表示されるカード(interest-card)の正確なDOM構造は未確認のため、
     指定したタグ名のテキストを画面上から探してクリックする、という汎用的な
     方式にしている(おすすめに出てこないタグの場合は見つからず警告を出すだけで、
-    処理は継続する)。"""
+    処理は継続する)。おすすめタグはタイトル/本文の内容を見て非同期に計算されて
+    表示される可能性があるため、本文入力直後は少し待ってから探す。
+    実際に設定できているかまではDOM構造が未確認で判定できないため、成功/失敗に
+    関わらず、この時点の画面のスクリーンショットとHTMLを保存する
+    (inspect_out指定時。次回失敗した場合の原因調査用)。"""
+    # おすすめタグの計算・描画が本文入力の完了から少し遅れることがあるため待つ。
+    page.wait_for_timeout(2000)
     for tag in tags:
+        clicked = False
         try:
             card = page.get_by_text(tag, exact=True).first
-            card.wait_for(state="visible", timeout=3000)
+            card.wait_for(state="visible", timeout=8000)
+            card.scroll_into_view_if_needed()
             card.click(force=True)
-            print(f"  興味関心タグ「{tag}」を設定しました。")
+            clicked = True
         except Exception:
+            pass
+        if clicked:
+            print(f"  興味関心タグ「{tag}」をクリックしました"
+                  "(実際に選択状態になったかは目視確認をお願いします)。")
+        else:
             print(f"  [警告] 興味関心タグ「{tag}」が見つからず設定できませんでした"
                   "(「おすすめの興味関心タグ」に表示されていない可能性があります)。",
                   file=sys.stderr)
+
+    if inspect_out is not None:
+        try:
+            inspect_out.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(inspect_out / "tags_debug.png"), full_page=True)
+            (inspect_out / "tags_debug.html").write_text(page.content(), encoding="utf-8")
+            print(f"  [診断] タグ欄の状態を {inspect_out / 'tags_debug.png'} / "
+                  f"{inspect_out / 'tags_debug.html'} に保存しました"
+                  "(タグがうまく設定できない場合はこれを共有してください)。")
+        except Exception:
+            pass
 
 
 def wait_for_uploads_to_finish(page, timeout_ms: int = 10000) -> None:
@@ -947,7 +975,7 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
     return jobs
 
 
-def post_one_article(page, new_post_url: str, job: dict) -> None:
+def post_one_article(page, new_post_url: str, job: dict, inspect_out: Path | None = None) -> None:
     """1記事分のタイトル/画像/本文の入力〜送信を行う。"""
     print(f"[新規投稿フォームを開く] {new_post_url}")
     page.goto(new_post_url, wait_until="networkidle", timeout=30000)
@@ -962,7 +990,7 @@ def post_one_article(page, new_post_url: str, job: dict) -> None:
         set_header_image(page, job["header_image"])
     fill_body(page, blocks)
     if job["tags"]:
-        set_tags(page, job["tags"])
+        set_tags(page, job["tags"], inspect_out)
 
     if job["mode"] == "draft":
         submit_draft(page)
@@ -982,7 +1010,7 @@ def run_job_with_error_capture(page, new_post_url: str, job: dict, inspect_out: 
     ショットを保存した上でFalseを返す(--batch実行時に1件の失敗で全体を
     止めないようにするため、例外はここで吸収する)。"""
     try:
-        post_one_article(page, new_post_url, job)
+        post_one_article(page, new_post_url, job, inspect_out)
         return True
     except Exception as e:
         inspect_out.mkdir(parents=True, exist_ok=True)
