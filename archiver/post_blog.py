@@ -498,7 +498,21 @@ def insert_inline_image(page, image_path: str) -> None:
     # 次の操作に進む前に、この画像のアップロードが完了する(blob:プレビューが
     # 実際のサーバーURLに置き換わる)まで待つ。複数枚挿入する場合、1枚ずつ完了を
     # 待たずに次を挿入すると、アップロード処理が競合して完了しないことがあるため。
-    wait_for_uploads_to_finish(page)
+    status = wait_for_uploads_to_finish(page)
+    if status == "no_attachment":
+        # ログには挿入成功と出るのに実際には本文に画像が入らない不具合が
+        # 実際にあった(ログイン直後、セッションで最初に処理する記事でのみ
+        # 再現しており、待ち時間を延ばしても直らなかったため、時間切れでは
+        # なくドロップ操作自体がまだ何も起こしていない状態のまま終わって
+        # いると判断)。この場合はまだ添付が1つも作られていない(重複の
+        # 心配がない)ため、もう一度同じドロップをやり直す。
+        print("  [警告] 画像の添付が作成されませんでした。もう一度ドラッグ&ドロップを"
+              "やり直します。", file=sys.stderr)
+        page.evaluate(TRIX_DROP_FILE_JS, [b64, resolved.name, mime])
+        status = wait_for_uploads_to_finish(page)
+    if status != "ok":
+        print("  [警告] 画像のアップロードが完了しないまま処理を続行します。"
+              "このまま送信すると画像が保存されない可能性があります。", file=sys.stderr)
 
 
 def fill_body(page, blocks: list[dict]) -> None:
@@ -723,7 +737,7 @@ def _dump_tags_debug(page, inspect_out: Path | None) -> None:
         pass
 
 
-def wait_for_uploads_to_finish(page, timeout_ms: int = 45000) -> None:
+def wait_for_uploads_to_finish(page, timeout_ms: int = 45000) -> str:
     """本文中の画像(Trixの添付ファイル)のアップロードが完了するまで待つ。
     Trixは添付ファイルの属性(url)が実際のサーバーURLに更新されても、すでに
     描画済みの<img>要素のsrc属性は自動的には再描画しない(見た目上はblob:の
@@ -732,19 +746,31 @@ def wait_for_uploads_to_finish(page, timeout_ms: int = 45000) -> None:
     ではなく、実際に保存に使われる data-trix-attachment のJSON中のurlを見て
     判定する(以前は<img src^="blob:">を見ていたため、実際はとっくに完了して
     いても永遠に未完了と誤判定していた)。
-    なお、drop相当のイベントを発火した直後はTrixがまだ添付要素を作成していない
-    ことがあるため、「blobの添付が0件」であることそのものは完了の証拠にならない
-    (=まだ挿入すらされていない場合も0件になり、即座に完了扱いされてしまい、次の
-    操作が割り込んで画像そのものが失われる不具合が実際に発生した)。そのため、
-    最後に挿入された添付が実際に存在し、かつそのurlが(空/未設定ではなく)
-    実際の値として設定されていて、それがblob:でもない、という条件で判定する
-    (「urlがblob:で始まらない」だけを条件にすると、urlキー自体がまだ存在しない
-    ＝本当は何も終わっていない状態まで「完了」と誤判定してしまい、src/hrefが
-    欠けた不完全な添付情報が保存されてしまう不具合が実際に発生した)。
+
+    戻り値は次の3種類:
+    - "ok": アップロード完了(urlがblob:以外の実際の値になった)
+    - "no_attachment": 添付要素自体が一度も作られなかった(ドロップ操作が
+      何も起こしていない)。ログイン直後、セッションで最初に処理する記事の
+      1枚目でだけ再現する不具合が実際にあり、待ち時間(45秒)を延ばしても
+      直らなかったため、時間切れではなく添付そのものが作られていないと判断
+      できるよう、まずこの状態を先にチェックしている。呼び出し側でこの場合
+      だけ安全に(まだ何も無いので重複の心配なく)ドロップをやり直せる。
+    - "stuck_blob": 添付は作られたが、既定の待ち時間内にurlが実際の値に
+      更新されなかった(純粋なアップロード遅延の可能性が高い)。
     既定値は45秒(ヘッダー画像側の待ち時間と同じ)。以前は10秒にしていたが、
     5記事の一括投稿中に2記事だけ本文中の画像が保存されない不具合が実際に
     発生し、待ち時間切れ(警告は出るが処理は継続してしまう)が原因と判断した
     ため、余裕を持たせた。"""
+    try:
+        page.wait_for_function(
+            "() => document.querySelectorAll('trix-editor figure[data-trix-attachment]').length > 0",
+            timeout=5000,
+        )
+    except Exception:
+        print("  [警告] 画像の添付要素が作成されませんでした"
+              "(ドラッグ&ドロップが反応していない可能性があります)。", file=sys.stderr)
+        return "no_attachment"
+
     try:
         page.wait_for_function(
             """() => {
@@ -761,10 +787,12 @@ def wait_for_uploads_to_finish(page, timeout_ms: int = 45000) -> None:
             timeout=timeout_ms,
         )
         print("  画像のアップロード完了を確認しました。")
+        return "ok"
     except Exception:
         print("  [警告] 画像のアップロードが完了しないまま既定の待ち時間"
               f"({timeout_ms}ms)を超えました。このまま送信すると失敗する"
               "(反応がないまま何も保存されない)可能性があります。", file=sys.stderr)
+        return "stuck_blob"
 
 
 def click_submit_button(page, selector: str, text_fallback: list[str], label: str) -> None:
