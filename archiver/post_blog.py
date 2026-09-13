@@ -55,7 +55,9 @@ force=True(重なりチェックを無視して強制的にクリック)で行�
     - **太字**・*斜体*・__下線__(旧記法)も後方互換のため引き続き使えるが、
       ChatGPT等に生成させる場合は __ が標準Markdownの太字と解釈され下線に
       ならないことがあるため、<b>/<i>/<u> タグを使うことを推奨する。
-    - <br> は「1段落の中で改行する」用途に対応している。
+    - 1つの段落(空行で区切られていない範囲)の中で改行したい場合は、単純に行を
+      分けて書けばよい(生の改行は自動的に<br>として扱われるため、明示的に
+      <br>と書く必要はない)。
     - 段落(空行区切り)ごとに、実際のブログでは空行1行分の間隔になる(以前は
       2行分になってしまう不具合があったため修正済み)。
 
@@ -259,23 +261,27 @@ def read_body_blocks(body_file: Path) -> list[dict]:
             blocks.append({"type": "image", "path": str(image_path)})
             continue
         quote = para.startswith("> ")
+        lines = para.split("\n")
         if quote:
             # 引用が複数行にわたり、継続行の先頭にも "> "(または空行代わりの
             # 単独の ">")が付いている書き方をChatGPT等がすることが実際にあった。
             # 先頭行だけでなく、各行の "> "/">" を取り除く。
             stripped_lines = []
-            for line in para.split("\n"):
+            for line in lines:
                 if line.startswith("> "):
                     stripped_lines.append(line[2:])
                 elif line == ">":
                     stripped_lines.append("")
                 else:
                     stripped_lines.append(line)
-            # 生の改行文字はHTML上ただの空白に潰れて見た目の改行にならないため、
-            # 引用の行区切りは<br>に変換しておく(空行代わりの単独">"だった行は
-            # 上で""に変換済みなので、その前後の連続する<br><br>が「1行分の
-            # 空き」として表示される)。
-            para = "<br>".join(stripped_lines)
+            lines = stripped_lines
+        # 生の改行文字はHTML上ただの空白に潰れて見た目の改行にならないため、
+        # 空行では区切られていない(=同じ段落内の)改行はすべて<br>に変換する
+        # (引用に限らず、プロフィール欄や見出し+説明のような、1段落内に複数行が
+        # 書かれたブロックすべてに当てはまる。空行代わりの単独">"だった行は
+        # 上で""に変換済みなので、その前後の連続する<br><br>が「1行分の空き」
+        # として表示される)。
+        para = "<br>".join(lines)
         blocks.append({"type": "text", "runs": parse_inline_runs(para), "quote": quote})
     return blocks
 
