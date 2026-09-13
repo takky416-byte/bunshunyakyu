@@ -406,6 +406,17 @@ def render_run_html(text: str, bold: bool, italic: bool, underline: bool) -> str
     return html
 
 
+def is_heading_block(block: dict) -> bool:
+    """段落全体が<u>下線</u>で装飾された、小見出しとして使われるブロックかどうか。
+    小見出しの直前だけ1行分ではなく2行分の空きにしたい、という要望に対応するため
+    (実際の記事では、CPUの説明などが続いたあとに次の小見出しへ入る箇所が、
+    通常の段落間より広めに空いていた方が読みやすいとの判断)。"""
+    if block["type"] != "text" or block.get("quote"):
+        return False
+    non_br_runs = [r for r in block["runs"] if r[0] != BR_MARKER]
+    return bool(non_br_runs) and all(underline for _, _, _, underline in non_br_runs)
+
+
 def render_block_html(block: dict) -> str:
     inner = "".join(render_run_html(t, b, i, u) for t, b, i, u in block["runs"])
     if block.get("quote"):
@@ -520,7 +531,14 @@ def fill_body(page, blocks: list[dict]) -> None:
             # 潰れ方に変わった)。そのため、区切りの<br><br>は独立して挿入せず、
             # 続くブロック本体のHTMLと同じ1回のinsertHTML()呼び出しに含める
             # (常に何か実内容が後に続く状態にして、末尾と誤認されないようにする)。
-            prefix = "<br><br>" if i > 0 else ""
+            if i == 0:
+                prefix = ""
+            elif is_heading_block(block):
+                # 小見出しの直前だけ、通常の1行分(<br><br>)ではなく2行分
+                # (<br><br><br>)空ける。
+                prefix = "<br><br><br>"
+            else:
+                prefix = "<br><br>"
             insert_raw_html(page, prefix + render_block_html(block))
     # Vue側(content.body、実際に送信される値そのもの)が、見た目のDOM内容と
     # 食い違うことが実際に確認された(figureはDOM上に残っているのに、送信データ
