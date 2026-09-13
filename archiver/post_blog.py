@@ -43,22 +43,27 @@ force=True(重なりチェックを無視して強制的にクリック)で行�
 本文ファイル(--body-file)の書き方:
     プレーンテキスト/Markdown風の記法を使います。段落は空行で区切ってください。
 
-    - 太字: **太字にしたい部分**
-    - 斜体: *斜体にしたい部分* または _斜体にしたい部分_
-    - 下線: __下線を引きたい部分__
-    - 組み合わせ可(例: **__太字+下線の見出し__**)
+    - 太字: <b>太字にしたい部分</b>
+    - 斜体: <i>斜体にしたい部分</i>
+    - 下線: <u>下線を引きたい部分</u>
+    - 組み合わせ可(例: <b><u>太字+下線の見出し</u></b>)
     - 引用(blockquote): 段落の先頭を "> " にする
     - 本文途中に画像を差し込む: 画像だけの行(前後を空行で区切った1行)に
-      ![説明](画像ファイルのパス) と書く(説明部分は空でも可: ![](img.jpg))
+      ![説明](画像ファイルのパス) と書く(説明部分は空でも可: ![](img.jpg)。
+      ![]()記法を忘れてファイル名だけの行になっていても、拡張子から画像だと
+      わかれば自動的に認識される)
+    - **太字**・*斜体*・__下線__(旧記法)も後方互換のため引き続き使えるが、
+      ChatGPT等に生成させる場合は __ が標準Markdownの太字と解釈され下線に
+      ならないことがあるため、<b>/<i>/<u> タグを使うことを推奨する。
 
     例:
-        **__IT野球選手名鑑 #017__**
+        <b><u>IT野球選手名鑑 #017</u></b>
 
         ルーター
 
         ![完投したエースの写真](images/ace.jpg)
 
-        今日は完封勝利でした。**エースの好投**が光った試合でした。
+        今日は完封勝利でした。<b>エースの好投</b>が光った試合でした。
 
         > この記事は生成AIを活用して執筆しています。
 
@@ -154,7 +159,15 @@ INLINE_IMAGE_LINE_RE = re.compile(r'^!\[[^\]]*\]\(([^)]+)\)$')
 BARE_IMAGE_LINE_RE = re.compile(
     r'^[^\s![\]()]+\.(?:jpe?g|png|gif|webp|bmp|svg)$', re.IGNORECASE
 )
-INLINE_TOKEN_RE = re.compile(r'(\*\*|__|\*|_)')
+# 太字/斜体/下線は <b>/<i>/<u> タグを正式な記法とする。標準的なMarkdownでは
+# **太字**・__も太字__・*斜体*であり、「下線」という概念自体が無いため、
+# ChatGPT等に生成させると __ が太字として解釈されて下線が反映されない現象が
+# 実際に発生した。**/*/__ による旧記法との一貫性のなさを避けるため、
+# HTMLタグに統一している(ChatGPT等は明示的なHTMLタグであれば素直にそのまま
+# 出力できるため、Markdown側の「独自ルール」を誤って上書きされにくい)。
+INLINE_TOKEN_RE = re.compile(
+    r'(\*\*|__|\*|_|</?b>|</?i>|</?u>)', re.IGNORECASE
+)
 # ChatGPT等が強調のつもりで **** (4つ以上のアスタリスク)のような非標準の記法を
 # 使うことが実際にあり、そのままだとトグルが偶数回効いて逆に無装飾になってしまう
 # ため、3つ以上連続するアスタリスク/アンダースコアは正規の **(太字)/*(斜体)の
@@ -170,21 +183,34 @@ def _normalize_excess_markers(text: str) -> str:
 
 
 def parse_inline_runs(text: str) -> list[tuple[str, bool, bool, bool]]:
-    """段落中の **太字** / *斜体*・_斜体_ / __下線__ 記法を、トグル方式で
-    (テキスト, bold, italic, underline) の並びに分解する。**__組み合わせ__** のような
-    入れ子(太字+下線など)も、単純なトグルの積み重ねとして扱えるので対応できる。"""
+    """段落中の <b>太字</b> / <i>斜体</i> / <u>下線</u> 記法(組み合わせ可)を
+    (テキスト, bold, italic, underline) の並びに分解する。**太字**・*斜体*・
+    __旧下線__ も後方互換のため引き続きトグルとして解釈する。"""
     text = _normalize_excess_markers(text)
     bold = italic = underline = False
     runs: list[tuple[str, bool, bool, bool]] = []
     for tok in INLINE_TOKEN_RE.split(text):
         if tok == "":
             continue
+        tok_lower = tok.lower()
         if tok == "**":
             bold = not bold
         elif tok == "__":
             underline = not underline
         elif tok in ("*", "_"):
             italic = not italic
+        elif tok_lower == "<b>":
+            bold = True
+        elif tok_lower == "</b>":
+            bold = False
+        elif tok_lower == "<i>":
+            italic = True
+        elif tok_lower == "</i>":
+            italic = False
+        elif tok_lower == "<u>":
+            underline = True
+        elif tok_lower == "</u>":
+            underline = False
         else:
             runs.append((tok, bold, italic, underline))
     return runs
@@ -192,7 +218,8 @@ def parse_inline_runs(text: str) -> list[tuple[str, bool, bool, bool]]:
 
 def read_body_blocks(body_file: Path) -> list[dict]:
     """本文ファイルを、段落(文字装飾つき)と画像挿入指示のブロック列に変換する。
-    - 空行区切りの段落: **太字** / *斜体*・_斜体_ / __下線__ をサポート(組み合わせ可)
+    - 空行区切りの段落: <b>太字</b> / <i>斜体</i> / <u>下線</u> をサポート(組み合わせ可、
+      **太字**・*斜体*・__下線__ の旧記法も後方互換として使える)
     - 画像だけの行(1行が丸ごと ![alt](path) の形、または拡張子から画像だとわかる
       ファイル名だけの行): その位置に画像を挿入する指示として扱う(ChatGPT等が
       ![]()記法を忘れてファイル名だけを書いてしまうことがあるための救済)。
@@ -818,6 +845,7 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
     jobs: list[dict] = []
     for d in subdirs:
         title_file = d / "title.txt"
+        article_file = d / "article.txt"
         body_file = None
         for name in ("body.txt", "body.md"):
             candidate = d / name
@@ -825,15 +853,13 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
                 body_file = candidate
                 break
 
-        if title_file.is_file():
-            lines = [line.strip() for line in title_file.read_text(encoding="utf-8-sig").splitlines()]
-            title = next((line for line in lines if line), d.name)
-        elif body_file is None and (d / "article.txt").is_file():
-            # title.txt/body.txt を別々に用意する手間を省くため、ChatGPT等の
-            # 出力をそのまま1ファイル(article.txt)として保存するだけでも
-            # 済むようにする: 1行目をタイトル、それ以降(先頭の空行を飛ばした
-            # 部分)を本文として自動的に分割し、本文は body.txt として書き出す。
-            article_file = d / "article.txt"
+        if article_file.is_file():
+            # article.txt があるフォルダは、常にこれをタイトル・本文の正として
+            # 使う(body.txtの有無に関わらず)。以前は「body.txtがまだ無い場合
+            # だけ」article.txtを読んでいたが、一度実行してbody.txtが自動生成
+            # されると、次回以降article.txtが無視されてタイトルがフォルダ名に
+            # フォールバックしてしまう不具合が実際に発生したため、article.txt
+            # がある限り毎回そこから本文を再生成するようにしている。
             lines = article_file.read_text(encoding="utf-8-sig").splitlines()
             first_idx = next((i for i, line in enumerate(lines) if line.strip()), None)
             if first_idx is None:
@@ -846,6 +872,15 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
                 raise SystemExit(f"{article_file} にタイトルはありますが本文がありません")
             body_file = d / "body.txt"
             body_file.write_text("\n".join(body_lines), encoding="utf-8")
+            if title_file.is_file():
+                # title.txt があれば明示的な上書きとして扱う(通常は不要)。
+                lines2 = [line.strip() for line in title_file.read_text(encoding="utf-8-sig").splitlines()]
+                override = next((line for line in lines2 if line), None)
+                if override:
+                    title = override
+        elif title_file.is_file():
+            lines = [line.strip() for line in title_file.read_text(encoding="utf-8-sig").splitlines()]
+            title = next((line for line in lines if line), d.name)
         else:
             title = d.name
 
