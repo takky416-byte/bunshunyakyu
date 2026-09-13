@@ -742,7 +742,11 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
         posts/
           2026-09-10-game-recap/
             title.txt        (省略可。無ければフォルダ名をそのままタイトルにする)
-            body.txt または body.md (必須)
+            body.txt または body.md (title.txt/article.txtのどちらかが無ければ必須)
+            article.txt      (title.txt/body.txtの代わりに、1ファイルにまとめて
+                               置いてもよい。1行目がタイトル、それ以降が本文として
+                               自動的に分割される。ChatGPT等の出力をコピー&ペーストで
+                               そのまま1ファイル保存するだけで済ませたい場合用)
             header.*         (省略可。ヘッダー画像。拡張子は問わない)
             publish_at.txt   (省略可。この記事だけ個別の予約日時にしたい場合。
                                1行目に '2026-09-15 21:00' のように書く)
@@ -767,20 +771,41 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
     jobs: list[dict] = []
     for d in subdirs:
         title_file = d / "title.txt"
-        if title_file.is_file():
-            lines = [line.strip() for line in title_file.read_text(encoding="utf-8-sig").splitlines()]
-            title = next((line for line in lines if line), d.name)
-        else:
-            title = d.name
-
         body_file = None
         for name in ("body.txt", "body.md"):
             candidate = d / name
             if candidate.is_file():
                 body_file = candidate
                 break
+
+        if title_file.is_file():
+            lines = [line.strip() for line in title_file.read_text(encoding="utf-8-sig").splitlines()]
+            title = next((line for line in lines if line), d.name)
+        elif body_file is None and (d / "article.txt").is_file():
+            # title.txt/body.txt を別々に用意する手間を省くため、ChatGPT等の
+            # 出力をそのまま1ファイル(article.txt)として保存するだけでも
+            # 済むようにする: 1行目をタイトル、それ以降(先頭の空行を飛ばした
+            # 部分)を本文として自動的に分割し、本文は body.txt として書き出す。
+            article_file = d / "article.txt"
+            lines = article_file.read_text(encoding="utf-8-sig").splitlines()
+            first_idx = next((i for i, line in enumerate(lines) if line.strip()), None)
+            if first_idx is None:
+                raise SystemExit(f"{article_file} が空です")
+            title = lines[first_idx].strip()
+            body_lines = lines[first_idx + 1:]
+            while body_lines and not body_lines[0].strip():
+                body_lines.pop(0)
+            if not body_lines:
+                raise SystemExit(f"{article_file} にタイトルはありますが本文がありません")
+            body_file = d / "body.txt"
+            body_file.write_text("\n".join(body_lines), encoding="utf-8")
+        else:
+            title = d.name
+
         if body_file is None:
-            raise SystemExit(f"{d} に body.txt(または body.md)が見つかりません")
+            raise SystemExit(
+                f"{d} に article.txt、または body.txt(もしくは body.md)が見つかりません"
+            )
 
         header_candidates = sorted(d.glob("header.*"))
 
@@ -903,8 +928,9 @@ def main() -> None:
     parser.add_argument("--batch-dir",
                          help="複数記事をまとめて投稿するためのフォルダ(JSONを書きたくない場合用)。"
                               "直下の各サブフォルダを1記事として扱い、"
-                              "title.txt(省略可、無ければフォルダ名がタイトル)・"
-                              "body.txt(またはbody.md)・header.*(省略可)を読む。"
+                              "title.txt+body.txt(またはbody.md)、"
+                              "またはその代わりに1ファイルにまとめた article.txt"
+                              "(1行目がタイトル、それ以降が本文)・header.*(省略可)を読む。"
                               "記事ごとに違う予約日時にしたい場合は、そのフォルダに"
                               "publish_at.txt を置いて1行目に日時を書く(例: '2026-09-15 21:00')。"
                               "publish_at.txt が無いフォルダには --draft/--publish-now/"

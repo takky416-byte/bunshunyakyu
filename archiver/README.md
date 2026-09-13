@@ -356,21 +356,28 @@ python post_blog.py --login-url https://yakyu.bunshun.jp/login \
 
 #### 3-a. フォルダで指定する(`--batch-dir`。JSONを書きたくない場合はこちら)
 
-記事ごとにフォルダを1つ作り、その中に `title.txt`(省略可)・`body.txt`・
-`header.*`(省略可)・`publish_at.txt`(省略可、記事ごとに予約日時を変えたい場合)を
-置くだけです。JSONを書く必要はありません。
+記事ごとにフォルダを1つ作り、その中にファイルを置くだけです。JSONを書く必要は
+ありません。タイトルと本文は、`title.txt`+`body.txt`の2ファイルに分けてもいいですし、
+**ChatGPT等の出力をそのままコピー&ペーストで1ファイル保存するだけで済む**
+`article.txt`(1行目がタイトル、それ以降が本文として自動的に分割されます)でも
+構いません。
 
 ```
 posts/
   2026-09-10-recap/
-    title.txt        ← 1行目がタイトルになる(無ければフォルダ名がそのままタイトル)
-    body.txt         ← 本文(--body-file と同じ書き方。![](画像名)でこのフォルダ内の画像を挿入可)
+    article.txt      ← 1行目=タイトル、2行目以降=本文(ChatGPTの出力をそのまま保存)
     header.jpg       ← ヘッダー画像(省略可。拡張子は問わない)
+    img1.jpg         ← 本文中の ![](img1.jpg) に対応する画像(必要な分だけ)
     publish_at.txt   ← この記事だけの予約日時(省略可。1行目に "2026-09-15 21:00" のように書く)
   2026-09-11-preview/
+    title.txt        ← title.txt/body.txtを別々に用意する場合はこちら
     body.txt
     publish_at.txt
 ```
+
+- `article.txt` と `title.txt`/`body.txt` はどちらの形式でも構いません(`title.txt`が
+  あればそちらのタイトルが優先されます)。本文の書き方(太字/斜体/下線/引用/画像挿入)は
+  `--body-file` と同じです。
 
 ```bash
 python post_blog.py --login-url https://yakyu.bunshun.jp/login \
