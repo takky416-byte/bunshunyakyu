@@ -142,9 +142,15 @@ SUBMIT_BUTTON_TEXT_FALLBACK = ["予約投稿する", "予約する", "投稿す�
 DRAFT_BUTTON_SELECTOR = ".subHeader__buttons button.btnOutline--medium"
 DRAFT_BUTTON_TEXT_FALLBACK = ["下書き保存"]
 
-# 興味関心タグ: 毎回付けたい既定のタグ。新規投稿フォームの「おすすめの興味関心タグ」
-# に表示されるカードをテキストでクリックする方式(正確なDOM構造が未確認のため)。
+# 興味関心タグ: 毎回付けたい既定のタグ。実際のUIは、フォーム上にカードが並んでいる
+# のではなく、「興味関心タグ」欄の「編集する」ボタンを押すとモーダルが開き、その中の
+# 検索ボックスにタグ名を入力して絞り込んだ上でカードをクリックし、最後に「完了」を
+# 押して確定する、という流れであることをスクリーンショットで確認済み(似た名前の
+# タグ(例:「偏愛選手名鑑2023」)も候補に出るため、完全一致でカードを選ぶ必要がある)。
 DEFAULT_TAGS = ["選手名鑑", "IT野球選手名鑑"]
+TAGS_EDIT_BUTTON_TEXT = "編集する"
+TAGS_SEARCH_PLACEHOLDER = "興味関心タグを検索"
+TAGS_DONE_BUTTON_TEXT = "完了"
 
 
 def get_credentials(args) -> tuple[str, str]:
@@ -596,45 +602,74 @@ def set_schedule(page, publish_at: datetime) -> None:
 
 
 def set_tags(page, tags: list[str], inspect_out: Path | None = None) -> None:
-    """新規投稿フォームの「興味関心タグ」を設定する。「おすすめの興味関心タグ」
-    欄に表示されるカード(interest-card)の正確なDOM構造は未確認のため、
-    指定したタグ名のテキストを画面上から探してクリックする、という汎用的な
-    方式にしている(おすすめに出てこないタグの場合は見つからず警告を出すだけで、
-    処理は継続する)。おすすめタグはタイトル/本文の内容を見て非同期に計算されて
-    表示される可能性があるため、本文入力直後は少し待ってから探す。
-    実際に設定できているかまではDOM構造が未確認で判定できないため、成功/失敗に
-    関わらず、この時点の画面のスクリーンショットとHTMLを保存する
-    (inspect_out指定時。次回失敗した場合の原因調査用)。"""
-    # おすすめタグの計算・描画が本文入力の完了から少し遅れることがあるため待つ。
-    page.wait_for_timeout(2000)
+    """新規投稿フォームの「興味関心タグ」を設定する。実際のUI(スクリーンショットで
+    確認済み)は次の流れ:
+      1. 「興味関心タグ」欄の「編集する」ボタンをクリックするとモーダルが開く
+      2. モーダル内の検索ボックス(placeholder="興味関心タグを検索")にタグ名を
+         入力すると、一致するカードが絞り込み表示される(似た名前のタグ、例:
+         「偏愛選手名鑑2023」も出てくるため、完全一致するカードだけをクリックする
+         必要がある)
+      3. カードをクリックすると「選択中の興味関心タグ」に追加される
+      4. 全タグを選び終えたら「完了」ボタンでモーダルを閉じて確定する
+    途中の要素が見つからない場合は警告を出すだけで処理は継続する(致命的エラーには
+    しない)。成功/失敗に関わらず、最後にこの時点の画面のスクリーンショットとHTMLを
+    保存する(inspect_out指定時。うまく設定できていない場合の原因調査用)。"""
+    try:
+        edit_btn = page.get_by_text(TAGS_EDIT_BUTTON_TEXT, exact=True).first
+        edit_btn.wait_for(state="visible", timeout=5000)
+        edit_btn.click(force=True)
+    except Exception:
+        print(f"  [警告] 興味関心タグの「{TAGS_EDIT_BUTTON_TEXT}」ボタンが見つからず、"
+              "タグを設定できませんでした。", file=sys.stderr)
+        _dump_tags_debug(page, inspect_out)
+        return
+
+    try:
+        search_box = page.get_by_placeholder(TAGS_SEARCH_PLACEHOLDER).first
+        search_box.wait_for(state="visible", timeout=5000)
+    except Exception:
+        print("  [警告] 興味関心タグの検索ボックスが見つからず、タグを設定できません"
+              "でした。", file=sys.stderr)
+        _dump_tags_debug(page, inspect_out)
+        return
+
     for tag in tags:
-        clicked = False
         try:
+            search_box.fill(tag)
+            page.wait_for_timeout(800)
             card = page.get_by_text(tag, exact=True).first
-            card.wait_for(state="visible", timeout=8000)
+            card.wait_for(state="visible", timeout=5000)
             card.scroll_into_view_if_needed()
             card.click(force=True)
-            clicked = True
+            print(f"  興味関心タグ「{tag}」を選択しました。")
         except Exception:
-            pass
-        if clicked:
-            print(f"  興味関心タグ「{tag}」をクリックしました"
-                  "(実際に選択状態になったかは目視確認をお願いします)。")
-        else:
-            print(f"  [警告] 興味関心タグ「{tag}」が見つからず設定できませんでした"
-                  "(「おすすめの興味関心タグ」に表示されていない可能性があります)。",
-                  file=sys.stderr)
+            print(f"  [警告] 興味関心タグ「{tag}」が候補に見つからず設定できません"
+                  "でした。", file=sys.stderr)
 
-    if inspect_out is not None:
-        try:
-            inspect_out.mkdir(parents=True, exist_ok=True)
-            page.screenshot(path=str(inspect_out / "tags_debug.png"), full_page=True)
-            (inspect_out / "tags_debug.html").write_text(page.content(), encoding="utf-8")
-            print(f"  [診断] タグ欄の状態を {inspect_out / 'tags_debug.png'} / "
-                  f"{inspect_out / 'tags_debug.html'} に保存しました"
-                  "(タグがうまく設定できない場合はこれを共有してください)。")
-        except Exception:
-            pass
+    try:
+        done_btn = page.get_by_text(TAGS_DONE_BUTTON_TEXT, exact=True).first
+        done_btn.wait_for(state="visible", timeout=3000)
+        done_btn.click(force=True)
+        print("  興味関心タグの選択を確定しました。")
+    except Exception:
+        print(f"  [警告] 興味関心タグの「{TAGS_DONE_BUTTON_TEXT}」ボタンが見つからず、"
+              "選択内容が確定していない可能性があります。", file=sys.stderr)
+
+    _dump_tags_debug(page, inspect_out)
+
+
+def _dump_tags_debug(page, inspect_out: Path | None) -> None:
+    if inspect_out is None:
+        return
+    try:
+        inspect_out.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(inspect_out / "tags_debug.png"), full_page=True)
+        (inspect_out / "tags_debug.html").write_text(page.content(), encoding="utf-8")
+        print(f"  [診断] タグ欄の状態を {inspect_out / 'tags_debug.png'} / "
+              f"{inspect_out / 'tags_debug.html'} に保存しました"
+              "(タグがうまく設定できない場合はこれを共有してください)。")
+    except Exception:
+        pass
 
 
 def wait_for_uploads_to_finish(page, timeout_ms: int = 10000) -> None:
