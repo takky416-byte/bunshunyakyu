@@ -723,7 +723,7 @@ def _dump_tags_debug(page, inspect_out: Path | None) -> None:
         pass
 
 
-def wait_for_uploads_to_finish(page, timeout_ms: int = 10000) -> None:
+def wait_for_uploads_to_finish(page, timeout_ms: int = 45000) -> None:
     """本文中の画像(Trixの添付ファイル)のアップロードが完了するまで待つ。
     Trixは添付ファイルの属性(url)が実際のサーバーURLに更新されても、すでに
     描画済みの<img>要素のsrc属性は自動的には再描画しない(見た目上はblob:の
@@ -740,7 +740,11 @@ def wait_for_uploads_to_finish(page, timeout_ms: int = 10000) -> None:
     実際の値として設定されていて、それがblob:でもない、という条件で判定する
     (「urlがblob:で始まらない」だけを条件にすると、urlキー自体がまだ存在しない
     ＝本当は何も終わっていない状態まで「完了」と誤判定してしまい、src/hrefが
-    欠けた不完全な添付情報が保存されてしまう不具合が実際に発生した)。"""
+    欠けた不完全な添付情報が保存されてしまう不具合が実際に発生した)。
+    既定値は45秒(ヘッダー画像側の待ち時間と同じ)。以前は10秒にしていたが、
+    5記事の一括投稿中に2記事だけ本文中の画像が保存されない不具合が実際に
+    発生し、待ち時間切れ(警告は出るが処理は継続してしまう)が原因と判断した
+    ため、余裕を持たせた。"""
     try:
         page.wait_for_function(
             """() => {
