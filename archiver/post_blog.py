@@ -176,7 +176,7 @@ def read_body_blocks(body_file: Path) -> list[dict]:
       置かれているディレクトリを基準に解決する)
     - 行頭が "> " の段落: 引用(blockquote)として扱う
     """
-    text = body_file.read_text(encoding="utf-8")
+    text = body_file.read_text(encoding="utf-8-sig")
     base_dir = body_file.resolve().parent
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     blocks: list[dict] = []
@@ -681,7 +681,7 @@ def load_batch(path: Path) -> list[dict]:
     draft / publish_now / publish_at のうち、必ずどれか1つだけを指定する。
     """
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as e:
         raise SystemExit(f"--batch のJSONファイルを読み込めませんでした({path}): {e}") from e
     if not isinstance(data, list):
@@ -757,7 +757,7 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
     for d in subdirs:
         title_file = d / "title.txt"
         if title_file.is_file():
-            lines = [line.strip() for line in title_file.read_text(encoding="utf-8").splitlines()]
+            lines = [line.strip() for line in title_file.read_text(encoding="utf-8-sig").splitlines()]
             title = next((line for line in lines if line), d.name)
         else:
             title = d.name
@@ -775,7 +775,7 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
 
         publish_at_file = d / "publish_at.txt"
         if publish_at_file.is_file():
-            lines = [line.strip() for line in publish_at_file.read_text(encoding="utf-8").splitlines()]
+            lines = [line.strip() for line in publish_at_file.read_text(encoding="utf-8-sig").splitlines()]
             value = next((line for line in lines if line), None)
             if not value:
                 raise SystemExit(f"{publish_at_file} が空です(予約日時を1行目に書いてください)")
