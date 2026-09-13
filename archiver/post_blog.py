@@ -133,6 +133,10 @@ SUBMIT_BUTTON_TEXT_FALLBACK = ["予約投稿する", "予約する", "投稿す�
 DRAFT_BUTTON_SELECTOR = ".subHeader__buttons button.btnOutline--medium"
 DRAFT_BUTTON_TEXT_FALLBACK = ["下書き保存"]
 
+# 興味関心タグ: 毎回付けたい既定のタグ。新規投稿フォームの「おすすめの興味関心タグ」
+# に表示されるカードをテキストでクリックする方式(正確なDOM構造が未確認のため)。
+DEFAULT_TAGS = ["選手名鑑", "IT野球選手名鑑"]
+
 
 def get_credentials(args) -> tuple[str, str]:
     username = args.username or os.environ.get("BUNSHUN_USERNAME")
@@ -517,6 +521,24 @@ def set_schedule(page, publish_at: datetime) -> None:
     print(f"  予約日時({SCHEDULE_DATETIME_SELECTOR}): {publish_at}")
 
 
+def set_tags(page, tags: list[str]) -> None:
+    """新規投稿フォームの「興味関心タグ」を設定する。「おすすめの興味関心タグ」
+    欄に表示されるカード(interest-card)の正確なDOM構造は未確認のため、
+    指定したタグ名のテキストを画面上から探してクリックする、という汎用的な
+    方式にしている(おすすめに出てこないタグの場合は見つからず警告を出すだけで、
+    処理は継続する)。"""
+    for tag in tags:
+        try:
+            card = page.get_by_text(tag, exact=True).first
+            card.wait_for(state="visible", timeout=3000)
+            card.click(force=True)
+            print(f"  興味関心タグ「{tag}」を設定しました。")
+        except Exception:
+            print(f"  [警告] 興味関心タグ「{tag}」が見つからず設定できませんでした"
+                  "(「おすすめの興味関心タグ」に表示されていない可能性があります)。",
+                  file=sys.stderr)
+
+
 def wait_for_uploads_to_finish(page, timeout_ms: int = 10000) -> None:
     """本文中の画像(Trixの添付ファイル)のアップロードが完了するまで待つ。
     Trixは添付ファイルの属性(url)が実際のサーバーURLに更新されても、すでに
@@ -731,11 +753,13 @@ def load_batch(path: Path) -> list[dict]:
             "images": [resolve(p) for p in entry.get("images", [])],
             "mode": mode,
             "publish_at": publish_at,
+            "tags": entry.get("tags", DEFAULT_TAGS),
         })
     return jobs
 
 
-def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: datetime | None) -> list[dict]:
+def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: datetime | None,
+                    default_tags: list[str]) -> list[dict]:
     """--batch-dir で指定したフォルダの直下にある各サブフォルダを、1記事分の
     設定として読み込む。JSONを書く手間を省くための単純なフォルダ規約:
 
@@ -750,6 +774,8 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
             header.*         (省略可。ヘッダー画像。拡張子は問わない)
             publish_at.txt   (省略可。この記事だけ個別の予約日時にしたい場合。
                                1行目に '2026-09-15 21:00' のように書く)
+            tags.txt         (省略可。この記事だけ個別の興味関心タグにしたい場合。
+                               1行に1つずつタグ名を書く)
 
     本文中に差し込む画像は、--body-file と同じく本文ファイル内に
     ![alt](画像ファイル名) と書けばよく(そのフォルダを基準にパスが解決される)、
@@ -825,6 +851,12 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
                 "コマンドラインで既定の投稿方法を指定してください。"
             )
 
+        tags_file = d / "tags.txt"
+        if tags_file.is_file():
+            tags = [line.strip() for line in tags_file.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
+        else:
+            tags = default_tags
+
         jobs.append({
             "title": title,
             "header_image": str(header_candidates[0]) if header_candidates else None,
@@ -832,6 +864,7 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
             "images": [],
             "mode": mode,
             "publish_at": publish_at,
+            "tags": tags,
         })
     return jobs
 
@@ -850,6 +883,8 @@ def post_one_article(page, new_post_url: str, job: dict) -> None:
     if job["header_image"]:
         set_header_image(page, job["header_image"])
     fill_body(page, blocks)
+    if job["tags"]:
+        set_tags(page, job["tags"])
 
     if job["mode"] == "draft":
         submit_draft(page)
@@ -912,6 +947,11 @@ def main() -> None:
     parser.add_argument("--image", action="append", default=[],
                          help="本文の最後にまとめて挿入する画像(複数指定可)。"
                               "本文の途中に差し込みたい場合は --body-file 中に ![](path) と書く")
+    parser.add_argument("--tag", action="append",
+                         help=f"興味関心タグとして設定するタグ名(複数指定可、"
+                              f"「おすすめの興味関心タグ」に表示されるものに一致する必要あり)。"
+                              f"省略時は既定のタグ({', '.join(DEFAULT_TAGS)})を使う")
+    parser.add_argument("--no-tags", action="store_true", help="興味関心タグを一切設定しない")
 
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--publish-at", type=parse_publish_at,
@@ -945,12 +985,16 @@ def main() -> None:
     if args.batch and args.batch_dir:
         parser.error("--batch と --batch-dir は同時に指定できません")
 
+    if args.tag and args.no_tags:
+        parser.error("--tag と --no-tags は同時に指定できません")
+
     if args.batch:
         if args.title or args.header_image or args.body_file or args.image \
-                or args.publish_at or args.publish_now or args.draft:
+                or args.publish_at or args.publish_now or args.draft \
+                or args.tag or args.no_tags:
             parser.error("--batch は --title/--header-image/--body-file/--image/"
-                          "--publish-at/--publish-now/--draft と同時に指定できません"
-                          "(記事ごとの設定はJSON側に書いてください)")
+                          "--publish-at/--publish-now/--draft/--tag/--no-tags と"
+                          "同時に指定できません(記事ごとの設定はJSON側に書いてください)")
     elif args.batch_dir:
         if args.title or args.header_image or args.body_file or args.image:
             parser.error("--batch-dir は --title/--header-image/--body-file/--image と"
@@ -1021,6 +1065,8 @@ def main() -> None:
             browser.close()
             return
 
+        tags = [] if args.no_tags else (args.tag if args.tag else list(DEFAULT_TAGS))
+
         is_batch = bool(args.batch or args.batch_dir)
         if args.batch:
             jobs = load_batch(Path(args.batch))
@@ -1033,7 +1079,7 @@ def main() -> None:
                 default_mode = "publish_at"
             else:
                 default_mode = None
-            jobs = load_batch_dir(Path(args.batch_dir), default_mode, args.publish_at)
+            jobs = load_batch_dir(Path(args.batch_dir), default_mode, args.publish_at, tags)
         else:
             jobs = [{
                 "title": args.title,
@@ -1042,6 +1088,7 @@ def main() -> None:
                 "images": args.image,
                 "mode": "draft" if args.draft else ("publish_at" if args.publish_at else "publish_now"),
                 "publish_at": args.publish_at,
+                "tags": tags,
             }]
 
         inspect_out = Path(args.inspect_out)
