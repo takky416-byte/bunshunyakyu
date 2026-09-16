@@ -143,12 +143,17 @@ SUBMIT_BUTTON_TEXT_FALLBACK = ["予約投稿する", "予約する", "投稿す�
 DRAFT_BUTTON_SELECTOR = ".subHeader__buttons button.btnOutline--medium"
 DRAFT_BUTTON_TEXT_FALLBACK = ["下書き保存"]
 
-# 興味関心タグ: 毎回付けたい既定のタグ。実際のUIは、フォーム上にカードが並んでいる
-# のではなく、「興味関心タグ」欄の「編集する」ボタンを押すとモーダルが開き、その中の
-# 検索ボックスにタグ名を入力して絞り込んだ上でカードをクリックし、最後に「完了」を
-# 押して確定する、という流れであることをスクリーンショットで確認済み(似た名前の
-# タグ(例:「偏愛選手名鑑2023」)も候補に出るため、完全一致でカードを選ぶ必要がある)。
-DEFAULT_TAGS = ["選手名鑑", "IT野球選手名鑑"]
+# 興味関心タグ: 実際のUIは、フォーム上にカードが並んでいるのではなく、「興味関心タグ」欄の
+# 「編集する」ボタンを押すとモーダルが開き、その中の検索ボックスにタグ名を入力して絞り込んだ
+# 上でカードをクリックし、最後に「完了」を押して確定する、という流れであることをスクリーン
+# ショットで確認済み(似た名前のタグ(例:「偏愛選手名鑑2023」)も候補に出るため、完全一致で
+# カードを選ぶ必要がある)。
+# このツールはもともと「IT野球選手名鑑」専用で、常に["選手名鑑", "IT野球選手名鑑"]を既定の
+# タグとして使っていたが、同じ文春野球友の会サイトの他のブログにも投稿できるようにする際、
+# 何も指定しないと無関係なブログの記事にまでこのIT野球選手名鑑用タグが付いてしまうため、
+# 既定のタグという概念自体を廃止した。タグは --tag(単発投稿)/ 記事フォルダのtags.txt
+# (記事ごと)/ --batch-dir直下のtags.txt(そのブログの全記事に共通)のいずれかで、
+# ブログごとに明示的に指定する。
 TAGS_EDIT_BUTTON_TEXT = "編集する"
 TAGS_SEARCH_PLACEHOLDER = "興味関心タグを検索"
 TAGS_DONE_BUTTON_TEXT = "完了"
@@ -962,6 +967,13 @@ def load_batch(path: Path) -> list[dict]:
         mode = modes[0]
         publish_at = parse_publish_at(str(entry["publish_at"])) if mode == "publish_at" else None
 
+        if "tags" not in entry:
+            raise SystemExit(
+                f"--batch の{i}番目の記事({title})に tags がありません。既定のタグは廃止した"
+                "ため、タグを付けたい場合は \"tags\": [\"タグ名\", ...] を、付けない場合は "
+                "\"tags\": [] を明示的に指定してください。"
+            )
+
         jobs.append({
             "title": title,
             "header_image": resolve(entry["header_image"]) if entry.get("header_image") else None,
@@ -969,17 +981,25 @@ def load_batch(path: Path) -> list[dict]:
             "images": [resolve(p) for p in entry.get("images", [])],
             "mode": mode,
             "publish_at": publish_at,
-            "tags": entry.get("tags", DEFAULT_TAGS),
+            "tags": entry["tags"],
         })
     return jobs
 
 
+def read_tags_file(path: Path) -> list[str]:
+    """1行に1つずつタグ名が書かれた tags.txt を読み込む(空行は無視)。"""
+    return [line.strip() for line in path.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
+
+
 def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: datetime | None,
-                    default_tags: list[str]) -> list[dict]:
+                    default_tags: list[str] | None) -> list[dict]:
     """--batch-dir で指定したフォルダの直下にある各サブフォルダを、1記事分の
     設定として読み込む。JSONを書く手間を省くための単純なフォルダ規約:
 
         posts/
+          tags.txt          (省略可。このフォルダ=1つのブログの全記事に共通の興味関心タグ。
+                               1行に1つずつタグ名を書く。下記の記事ごとのtags.txtがあれば
+                               そちらが優先される)
           2026-09-10-game-recap/
             title.txt        (省略可。無ければフォルダ名をそのままタイトルにする)
             body.txt または body.md (title.txt/article.txtのどちらかが無ければ必須)
@@ -991,7 +1011,7 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
             publish_at.txt   (省略可。この記事だけ個別の予約日時にしたい場合。
                                1行目に '2026-09-15 21:00' のように書く)
             tags.txt         (省略可。この記事だけ個別の興味関心タグにしたい場合。
-                               1行に1つずつタグ名を書く)
+                               1行に1つずつタグ名を書く。上のフォルダ直下tags.txtより優先)
 
     本文中に差し込む画像は、--body-file と同じく本文ファイル内に
     ![alt](画像ファイル名) と書けばよく(そのフォルダを基準にパスが解決される)、
@@ -1002,13 +1022,22 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
     そこに書かれた日時で必ず予約投稿になる。無いフォルダは、コマンドラインの
     --draft/--publish-now/--publish-at (default_mode/default_publish_at) を
     既定値として使う。全フォルダに publish_at.txt がある場合は、コマンドライン側の
-    --draft/--publish-now/--publish-at は省略できる。"""
+    --draft/--publish-now/--publish-at は省略できる。
+
+    タグには既定値が無い(複数のブログを投稿できるようにする際、無関係なブログの記事に
+    まで別ブログ用のタグが付いてしまわないよう、既定のタグという概念自体を廃止した)。
+    記事ごとの tags.txt → フォルダ直下(--batch-dir自身)の tags.txt →
+    コマンドラインの --tag/--no-tags (default_tags) の順で優先され、どれも無い記事は
+    エラーにする。"""
     if not path.is_dir():
         raise SystemExit(f"--batch-dir に指定したパスがフォルダではありません: {path}")
 
     subdirs = sorted(p for p in path.iterdir() if p.is_dir())
     if not subdirs:
         raise SystemExit(f"--batch-dir のフォルダの直下に記事フォルダが見つかりません: {path}")
+
+    batch_tags_file = path / "tags.txt"
+    batch_default_tags = read_tags_file(batch_tags_file) if batch_tags_file.is_file() else None
 
     jobs: list[dict] = []
     for d in subdirs:
@@ -1077,9 +1106,19 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
 
         tags_file = d / "tags.txt"
         if tags_file.is_file():
-            tags = [line.strip() for line in tags_file.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
-        else:
+            tags = read_tags_file(tags_file)
+        elif batch_default_tags is not None:
+            tags = batch_default_tags
+        elif default_tags is not None:
             tags = default_tags
+        else:
+            raise SystemExit(
+                f"{d} にタグの指定がありません({tags_file} が無く、{batch_tags_file} も無く、"
+                "コマンドラインで --tag/--no-tags も指定されていません)。この記事フォルダに "
+                "tags.txt を置くか、--batch-dir 直下にそのブログ全体で共通の tags.txt を置くか、"
+                "コマンドラインで --tag/--no-tags を指定してください(タグを付けない記事は "
+                "中身が空の tags.txt でも構いません)。"
+            )
 
         jobs.append({
             "title": title,
@@ -1172,9 +1211,10 @@ def main() -> None:
                          help="本文の最後にまとめて挿入する画像(複数指定可)。"
                               "本文の途中に差し込みたい場合は --body-file 中に ![](path) と書く")
     parser.add_argument("--tag", action="append",
-                         help=f"興味関心タグとして設定するタグ名(複数指定可、"
-                              f"「おすすめの興味関心タグ」に表示されるものに一致する必要あり)。"
-                              f"省略時は既定のタグ({', '.join(DEFAULT_TAGS)})を使う")
+                         help="興味関心タグとして設定するタグ名(複数指定可、"
+                              "「おすすめの興味関心タグ」に表示されるものに一致する必要あり)。"
+                              "既定のタグは無いため、単発投稿(--batch/--batch-dir を使わない"
+                              "場合)では --tag か --no-tags のどちらかを必ず指定する")
     parser.add_argument("--no-tags", action="store_true", help="興味関心タグを一切設定しない")
 
     group = parser.add_mutually_exclusive_group()
@@ -1234,6 +1274,9 @@ def main() -> None:
             parser.error("--body-file を指定してください")
         if not args.publish_at and not args.publish_now and not args.draft:
             parser.error("--publish-at か --publish-now か --draft のいずれかを指定してください")
+        if not args.tag and not args.no_tags:
+            parser.error("--tag か --no-tags のいずれかを指定してください(既定のタグは廃止した"
+                          "ため、タグを付けない場合も --no-tags で明示してください)")
 
     try:
         from playwright.sync_api import sync_playwright
@@ -1289,7 +1332,11 @@ def main() -> None:
             browser.close()
             return
 
-        tags = [] if args.no_tags else (args.tag if args.tag else list(DEFAULT_TAGS))
+        # 既定のタグは廃止したため、--no-tags/--tag のどちらも無ければ None のままにする
+        # (--batch-dir では None のまま load_batch_dir() に渡し、記事フォルダ/バッチフォルダ
+        # 直下の tags.txt で解決できるかを任せる。単発投稿では上のバリデーションで
+        # --tag/--no-tags のどちらかが必須のため、ここで None のままになることはない)。
+        tags = [] if args.no_tags else (list(args.tag) if args.tag else None)
 
         is_batch = bool(args.batch or args.batch_dir)
         if args.batch:
