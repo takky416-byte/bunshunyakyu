@@ -507,10 +507,14 @@ python post_blog.py --login-url https://yakyu.bunshun.jp/login --batch posts.jso
 
 ```
 archiver/
+  WRITING_RULES_COMMON.md     ← 全ブログ共通の出力フォーマットルール(ChatGPTに渡す)
+  WRITING_RULES_TEMPLATE.md   ← 新しいブログを始めるときにコピーして使うひな形
   create/                     ← IT野球選手名鑑用(既存)
+    WRITING_RULES.md          ← このブログ固有の執筆ルール(構成・トーン)
     tags.txt                  ← ["選手名鑑", "IT野球選手名鑑"]
     post051/ ...
   create-another-blog/        ← 別のブログ用(新規に作るフォルダ)
+    WRITING_RULES.md          ← WRITING_RULES_TEMPLATE.md をコピーして埋める
     tags.txt                  ← そのブログ用のタグ(無ければ空ファイルでも可)
     2026-10-01-first-post/ ...
 ```
@@ -527,6 +531,29 @@ python post_blog.py --login-url https://yakyu.bunshun.jp/login --batch-dir archi
   既定タグとして使われるため、コマンドラインで毎回 `--tag` を指定し直す必要はありません。
 - ブログの種類が増えても `post_blog.py` 自体は共通のまま使い回せます(投稿先URL・
   ログイン方法・フォーム構造はどのブログでも同じ新規投稿フォームのためです)。
+
+### ChatGPTに書いてもらう(執筆ルール)
+
+どのブログも記事本文はChatGPT等に考えて出力してもらう想定です。出力がこのツールの
+想定する形式(文字装飾のタグ、画像の挿入方法など)からズレると、自動投稿時に書式が
+崩れたり画像が入らなかったりするため、次の2つのファイルをChatGPTへの指示として
+そのまま貼り付けて使ってください。
+
+1. `archiver/WRITING_RULES_COMMON.md` — 出力フォーマットの共通ルール(全ブログ共通。
+   タイトル行の形式、段落の区切り方、`<b>`/`<i>`/`<u>` による文字装飾、引用、
+   画像の挿入方法、タグは本文に書かないこと、などを定義しています)。
+2. そのブログの `WRITING_RULES.md` — ブログ固有の構成・トーン(見出しの並び、
+   各セクションの段落数、文体、定型文など)。IT野球選手名鑑のものは
+   `archiver/create/WRITING_RULES.md` にあります。
+
+新しいブログを始めるときは、`archiver/WRITING_RULES_TEMPLATE.md` をそのブログの
+フォルダにコピーして `WRITING_RULES.md` として保存し、空欄を埋めてください。
+興味関心タグ(そのブログの `tags.txt` に設定する内容)もこのファイルに書いておくと、
+タグ設定を忘れにくくなります。
+
+ChatGPTの出力は、そのまま `article.txt` として記事フォルダに保存すれば使えます
+(1行目=タイトル、2行目以降=本文。詳しくは上記「1. 本文ファイルを用意する」/
+「3-a. フォルダで指定する」を参照)。
 
 ## 利用上の注意
 
