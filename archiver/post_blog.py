@@ -36,6 +36,11 @@ force=True(重なりチェックを無視して強制的にクリック)で行�
     python post_blog.py --login-url https://yakyu.bunshun.jp/login \\
         --title "..." --body-file post_body.txt --publish-now
 
+    # 3. 複数ブログの記事データをまとめたzipファイルから、まとめて下書き投稿する
+    #    (zip直下にブログごとのフォルダを並べる。詳しくは --batch-zip の説明を参照)
+    python post_blog.py --login-url https://yakyu.bunshun.jp/login \\
+        --batch-zip bundle.zip --draft
+
 必要ライブラリ:
     pip install playwright
     playwright install chromium
@@ -98,7 +103,10 @@ import getpass
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
+import zipfile
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -1018,6 +1026,50 @@ def read_tags_file(path: Path) -> list[str]:
     return [line.strip() for line in path.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
 
 
+def extract_batch_zip(zip_path: Path) -> Path:
+    """--batch-zip で渡されたzipファイルを一時フォルダに展開し、展開先のパスを返す。
+    展開先は呼び出し側(main())が投稿完了後に削除する(記事の画像ファイル等が
+    展開先の中にあるため、全記事の投稿が終わるまでは消せない)。"""
+    if not zip_path.is_file():
+        raise SystemExit(f"--batch-zip に指定したファイルが見つかりません: {zip_path}")
+    extract_dir = Path(tempfile.mkdtemp(prefix="post_blog_zip_"))
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(extract_dir)
+    except zipfile.BadZipFile as e:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        raise SystemExit(f"--batch-zip に指定したファイルをzipとして読み込めませんでした: {zip_path}: {e}") from e
+    return extract_dir
+
+
+_POST_MARKER_FILES = ("article.txt", "title.txt", "body.txt", "body.md")
+
+
+def _looks_like_post_dir(path: Path) -> bool:
+    """article.txt/title.txt/body.txt/body.mdのいずれかを直接持つフォルダは、
+    ブログフォルダではなく(--batch-dirの規約でいう)記事フォルダ自身とみなす。"""
+    return any((path / name).is_file() for name in _POST_MARKER_FILES)
+
+
+def discover_blog_dirs(extracted_root: Path) -> list[Path]:
+    """展開したzipの直下から、ブログ(記事シリーズ)ごとのフォルダを見つける。
+    複数のブログをまとめて渡す想定のzipは、直下にブログごとのフォルダを並べる
+    (各フォルダの中身は --batch-dir と同じ規約: 記事ごとのサブフォルダ、
+    省略可の tags.txt / WRITING_RULES.md)。Macが自動生成する "__MACOSX" や
+    隠しフォルダは無視する。
+
+    直下のフォルダが記事フォルダ自身(article.txt等を直接持つ)の場合、または
+    直下にフォルダが1つも無い場合は、1ブログだけのzip(記事フォルダがzip直下に
+    そのまま置かれている)とみなし、展開先自身を返す。"""
+    entries = [
+        p for p in extracted_root.iterdir()
+        if p.is_dir() and not p.name.startswith(".") and p.name != "__MACOSX"
+    ]
+    if entries and not any(_looks_like_post_dir(d) for d in entries):
+        return sorted(entries)
+    return [extracted_root]
+
+
 def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: datetime | None,
                     default_tags: list[str] | None) -> list[dict]:
     """--batch-dir で指定したフォルダの直下にある各サブフォルダを、1記事分の
@@ -1267,14 +1319,23 @@ def main() -> None:
                               "publish_at.txt が無いフォルダには --draft/--publish-now/"
                               "--publish-at で指定した既定の投稿方法が使われる"
                               "(全フォルダに publish_at.txt がある場合は省略可)")
+    parser.add_argument("--batch-zip",
+                         help="複数ブログの記事データをまとめて受け取るためのzipファイル。"
+                              "zip直下にブログ(記事シリーズ)ごとのフォルダを並べておくと"
+                              "(各フォルダの中身は --batch-dir と同じ規約)、フォルダ単位で"
+                              "全ブログをまとめて投稿する(1ブログ分のフォルダをそのまま"
+                              "zip化した場合もそれを1件として扱う)。zipはコマンド実行時に"
+                              "一時フォルダへ展開され、全記事の投稿完了後に自動で削除される。"
+                              "--batch/--batch-dir とは同時に指定できない")
     parser.add_argument("--batch-delay-seconds", type=float, default=3.0,
-                         help="--batch/--batch-dir で複数記事を投稿する際、1記事ごとの間に"
-                              "空ける秒数(既定: 3秒。サーバーに負荷をかけすぎないようにするため)")
+                         help="--batch/--batch-dir/--batch-zip で複数記事を投稿する際、"
+                              "1記事ごとの間に空ける秒数(既定: 3秒。サーバーに負荷を"
+                              "かけすぎないようにするため)")
 
     args = parser.parse_args()
 
-    if args.batch and args.batch_dir:
-        parser.error("--batch と --batch-dir は同時に指定できません")
+    if sum(bool(x) for x in (args.batch, args.batch_dir, args.batch_zip)) > 1:
+        parser.error("--batch と --batch-dir と --batch-zip は同時に指定できません")
 
     if args.tag and args.no_tags:
         parser.error("--tag と --no-tags は同時に指定できません")
@@ -1286,9 +1347,10 @@ def main() -> None:
             parser.error("--batch は --title/--header-image/--body-file/--image/"
                           "--publish-at/--publish-now/--draft/--tag/--no-tags と"
                           "同時に指定できません(記事ごとの設定はJSON側に書いてください)")
-    elif args.batch_dir:
+    elif args.batch_dir or args.batch_zip:
+        opt_name = "--batch-dir" if args.batch_dir else "--batch-zip"
         if args.title or args.header_image or args.body_file or args.image:
-            parser.error("--batch-dir は --title/--header-image/--body-file/--image と"
+            parser.error(f"{opt_name} は --title/--header-image/--body-file/--image と"
                           "同時に指定できません(記事ごとの設定はフォルダ側に書いてください)")
         # --draft/--publish-now/--publish-at はここでは必須にしない: 各記事フォルダに
         # publish_at.txt を置けば記事ごとに個別の予約日時にできるため、全フォルダに
@@ -1365,42 +1427,64 @@ def main() -> None:
         # --tag/--no-tags のどちらかが必須のため、ここで None のままになることはない)。
         tags = [] if args.no_tags else (list(args.tag) if args.tag else None)
 
-        is_batch = bool(args.batch or args.batch_dir)
-        if args.batch:
-            jobs = load_batch(Path(args.batch))
-        elif args.batch_dir:
-            if args.draft:
-                default_mode = "draft"
-            elif args.publish_now:
-                default_mode = "publish_now"
-            elif args.publish_at:
-                default_mode = "publish_at"
+        is_batch = bool(args.batch or args.batch_dir or args.batch_zip)
+        zip_extract_dir: Path | None = None
+        try:
+            if args.batch:
+                jobs = load_batch(Path(args.batch))
+            elif args.batch_dir or args.batch_zip:
+                if args.draft:
+                    default_mode = "draft"
+                elif args.publish_now:
+                    default_mode = "publish_now"
+                elif args.publish_at:
+                    default_mode = "publish_at"
+                else:
+                    default_mode = None
+                if args.batch_dir:
+                    jobs = load_batch_dir(Path(args.batch_dir), default_mode, args.publish_at, tags)
+                else:
+                    # --batch-zip: zipを一時フォルダへ展開し、直下のブログ(記事シリーズ)
+                    # ごとのフォルダをそれぞれ --batch-dir と同じ規約で読み込み、
+                    # 全ブログ分をまとめて1回のログインセッションで投稿する。
+                    zip_extract_dir = extract_batch_zip(Path(args.batch_zip))
+                    blog_dirs = discover_blog_dirs(zip_extract_dir)
+                    print(f"[zip展開] {args.batch_zip} → {len(blog_dirs)} 件のブログフォルダを"
+                          f"検出しました: {', '.join(d.name for d in blog_dirs)}")
+                    jobs = []
+                    for blog_dir in blog_dirs:
+                        blog_jobs = load_batch_dir(blog_dir, default_mode, args.publish_at, tags)
+                        for job in blog_jobs:
+                            job["blog"] = blog_dir.name
+                        jobs.extend(blog_jobs)
             else:
-                default_mode = None
-            jobs = load_batch_dir(Path(args.batch_dir), default_mode, args.publish_at, tags)
-        else:
-            jobs = [{
-                "title": args.title,
-                "header_image": args.header_image,
-                "body_file": args.body_file,
-                "images": args.image,
-                "mode": "draft" if args.draft else ("publish_at" if args.publish_at else "publish_now"),
-                "publish_at": args.publish_at,
-                "tags": tags,
-            }]
+                jobs = [{
+                    "title": args.title,
+                    "header_image": args.header_image,
+                    "body_file": args.body_file,
+                    "images": args.image,
+                    "mode": "draft" if args.draft else ("publish_at" if args.publish_at else "publish_now"),
+                    "publish_at": args.publish_at,
+                    "tags": tags,
+                }]
 
-        inspect_out = Path(args.inspect_out)
-        results: list[tuple[str, bool]] = []
-        for i, job in enumerate(jobs, start=1):
-            if is_batch:
-                print(f"\n===== [{i}/{len(jobs)}] {job['title']} =====")
-            ok = run_job_with_error_capture(page, args.new_post_url, job, inspect_out)
-            results.append((job["title"], ok))
-            if is_batch and i < len(jobs) and args.batch_delay_seconds > 0:
-                page.wait_for_timeout(int(args.batch_delay_seconds * 1000))
+            inspect_out = Path(args.inspect_out)
+            results: list[tuple[str, bool]] = []
+            for i, job in enumerate(jobs, start=1):
+                if is_batch:
+                    label = f"[{job['blog']}] {job['title']}" if job.get("blog") else job["title"]
+                    print(f"\n===== [{i}/{len(jobs)}] {label} =====")
+                ok = run_job_with_error_capture(page, args.new_post_url, job, inspect_out)
+                result_label = f"{job['blog']}: {job['title']}" if job.get("blog") else job["title"]
+                results.append((result_label, ok))
+                if is_batch and i < len(jobs) and args.batch_delay_seconds > 0:
+                    page.wait_for_timeout(int(args.batch_delay_seconds * 1000))
 
-        if args.headed:
-            input("  ブラウザで結果を確認してください。Enterキーを押すと閉じます... ")
+            if args.headed:
+                input("  ブラウザで結果を確認してください。Enterキーを押すと閉じます... ")
+        finally:
+            if zip_extract_dir is not None:
+                shutil.rmtree(zip_extract_dir, ignore_errors=True)
 
         browser.close()
 
