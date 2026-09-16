@@ -510,7 +510,6 @@ archiver/
   WRITING_RULES_COMMON.md     ← 全ブログ共通の出力フォーマットルール(ChatGPTに渡す)
   WRITING_RULES_TEMPLATE.md   ← 新しいブログを始めるときにコピーして使うひな形
   create/                     ← IT野球選手名鑑用(既存)
-    WRITING_RULES.md          ← このブログ固有の執筆ルール(構成・トーン)
     tags.txt                  ← ["選手名鑑", "IT野球選手名鑑"]
     post051/ ...
   create-another-blog/        ← 別のブログ用(新規に作るフォルダ)
@@ -543,11 +542,10 @@ python post_blog.py --login-url https://yakyu.bunshun.jp/login --batch-dir archi
    タイトル行の形式、段落の区切り方、`<b>`/`<i>`/`<u>` による文字装飾、引用、
    画像の挿入方法、タグは本文に書かないこと、などを定義しています)。
 2. そのブログの `WRITING_RULES.md` — ブログ固有の構成・トーン(見出しの並び、
-   各セクションの段落数、文体、定型文など)。IT野球選手名鑑のものは
-   `archiver/create/WRITING_RULES.md` にあります。
+   各セクションの段落数、文体、定型文など)。`archiver/WRITING_RULES_TEMPLATE.md`
+   をそのブログのフォルダにコピーして `WRITING_RULES.md` として保存し、空欄を
+   埋めて作成してください。
 
-新しいブログを始めるときは、`archiver/WRITING_RULES_TEMPLATE.md` をそのブログの
-フォルダにコピーして `WRITING_RULES.md` として保存し、空欄を埋めてください。
 興味関心タグ(そのブログの `tags.txt` に設定する内容)もこのファイルに書いておくと、
 タグ設定を忘れにくくなります。
 
