@@ -92,13 +92,20 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
 
 DEFAULT_LOGIN_URL = "https://yakyu.bunshun.jp/login"
 DEFAULT_NEW_POST_URL = "https://yakyu.bunshun.jp/blogs/new"
 DEFAULT_INSPECT_DIR = Path("archive/_new_post_inspect")
+
+# yakyu.bunshun.jp(OSIRO基盤)の予約投稿は、実行時点から30日後までしか
+# 設定できない仕様であることが実際の動作で確認された(31日後の予約は、
+# 送信ボタンを押してもエラーは出ずページ遷移だけが起きず、実質失敗する)。
+# 事前にこの制限を弾いておき、原因不明な「送信したのに保存されない」
+# 失敗として気づくより早く、分かりやすいエラーで止める。
+MAX_PUBLISH_AT_DAYS = 30
 
 # 新規投稿フォームの各要素を探すための候補。
 # 2026-09時点で実際に確認できたHTML(yakyu.bunshun.jp/blogs/new, OSIRO基盤)を元にしている。
@@ -894,14 +901,27 @@ def submit_draft(page) -> None:
 
 
 def parse_publish_at(value: str) -> datetime:
+    dt = None
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y/%m/%d %H:%M"):
         try:
-            return datetime.strptime(value, fmt)
+            dt = datetime.strptime(value, fmt)
+            break
         except ValueError:
             continue
-    raise argparse.ArgumentTypeError(
-        f"日時の形式が正しくありません: {value}(例: '2026-09-15 21:00')"
-    )
+    if dt is None:
+        raise argparse.ArgumentTypeError(
+            f"日時の形式が正しくありません: {value}(例: '2026-09-15 21:00')"
+        )
+    limit = datetime.now() + timedelta(days=MAX_PUBLISH_AT_DAYS)
+    if dt > limit:
+        raise argparse.ArgumentTypeError(
+            f"予約日時が遠すぎます: {value}。yakyu.bunshun.jp の予約投稿は、"
+            f"実行時点から{MAX_PUBLISH_AT_DAYS}日後(だいたい{limit:%Y-%m-%d %H:%M}まで)"
+            "までしか設定できない仕様のようです(実際に31日後を指定すると、"
+            "送信ボタンを押してもページ遷移が起きず失敗することを確認済み)。"
+            "実行日を予約日の30日以内まで待ってから、改めて実行してください。"
+        )
+    return dt
 
 
 def load_batch(path: Path) -> list[dict]:
