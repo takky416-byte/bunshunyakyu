@@ -48,6 +48,9 @@ force=True(重なりチェックを無視して強制的にクリック)で行�
     - 下線: <u>下線を引きたい部分</u>
     - 組み合わせ可(例: <b><u>太字+下線の見出し</u></b>)
     - 引用(blockquote): 段落の先頭を "> " にする
+    - 見出し(<h3>): 段落の先頭を "# "(半角シャープ+半角スペース)にする
+      (例: "# 弘治元年　安芸国・厳島"。このサイトのTrixエディタは見出しレベルを
+      1つしか持たないため、"##"のように#を複数書いても同じ見出しになる)
     - 本文途中に画像を差し込む: 画像だけの行(前後を空行で区切った1行)に
       ![説明](画像ファイルのパス) と書く(説明部分は空でも可: ![](img.jpg)。
       ![]()記法を忘れてファイル名だけの行になっていても、拡張子から画像だと
@@ -69,6 +72,10 @@ force=True(重なりチェックを無視して強制的にクリック)で行�
         ![完投したエースの写真](images/ace.jpg)
 
         今日は完封勝利でした。<b>エースの好投</b>が光った試合でした。
+
+        # 弘治元年　安芸国・厳島
+
+        今日の舞台は安芸国・厳島です。
 
         > この記事は生成AIを活用して執筆しています。
 
@@ -169,6 +176,13 @@ def get_credentials(args) -> tuple[str, str]:
     return username, password
 
 
+# 見出し行: 段落の先頭行が "#"(1〜6個)+空白で始まる場合、本物の見出し
+# (<h3>)ブロックとして扱う。このサイトのTrixエディタは見出しレベルを1つしか
+# 持たず、実際に公開された記事のHTML(devtoolsで確認)でも <h3>...</h3> として
+# 保存されることを確認済み。以前はMarkdownの見出し記号(#)は非対応(そのまま
+# 文字として表示される)としていたが、見出しが必要なブログ(合戦を章立てで
+# 紹介するものなど)に対応するため、本物の見出しとして解釈するように変更した。
+HEADING_LINE_RE = re.compile(r'^#{1,6}\s+')
 INLINE_IMAGE_LINE_RE = re.compile(r'^!\[[^\]]*\]\(([^)]+)\)$')
 # ChatGPT等が ![](img1.jpg) の記法を忘れ、ファイル名だけを1行で書いてしまうことが
 # 実際にあったため、拡張子から画像だとわかるファイル名だけの行も画像指示として救済する。
@@ -251,6 +265,7 @@ def read_body_blocks(body_file: Path) -> list[dict]:
       相対パスは実行時のカレントディレクトリではなく、この本文ファイル自身が
       置かれているディレクトリを基準に解決する。
     - 行頭が "> " の段落: 引用(blockquote)として扱う
+    - 段落の先頭行が "#"(1〜6個)+空白で始まる場合: 本物の見出し(<h3>)として扱う
     """
     text = body_file.read_text(encoding="utf-8-sig")
     base_dir = body_file.resolve().parent
@@ -267,6 +282,7 @@ def read_body_blocks(body_file: Path) -> list[dict]:
             continue
         quote = para.startswith("> ")
         lines = para.split("\n")
+        heading = False
         if quote:
             # 引用が複数行にわたり、継続行の先頭にも "> "(または空行代わりの
             # 単独の ">")が付いている書き方をChatGPT等がすることが実際にあった。
@@ -280,6 +296,11 @@ def read_body_blocks(body_file: Path) -> list[dict]:
                 else:
                     stripped_lines.append(line)
             lines = stripped_lines
+        else:
+            m = HEADING_LINE_RE.match(lines[0])
+            if m:
+                heading = True
+                lines[0] = lines[0][m.end():]
         # 生の改行文字はHTML上ただの空白に潰れて見た目の改行にならないため、
         # 空行では区切られていない(=同じ段落内の)改行はすべて<br>に変換する
         # (引用に限らず、プロフィール欄や見出し+説明のような、1段落内に複数行が
@@ -287,7 +308,7 @@ def read_body_blocks(body_file: Path) -> list[dict]:
         # 上で""に変換済みなので、その前後の連続する<br><br>が「1行分の空き」
         # として表示される)。
         para = "<br>".join(lines)
-        blocks.append({"type": "text", "runs": parse_inline_runs(para), "quote": quote})
+        blocks.append({"type": "text", "runs": parse_inline_runs(para), "quote": quote, "heading": heading})
     return blocks
 
 
@@ -412,12 +433,16 @@ def render_run_html(text: str, bold: bool, italic: bool, underline: bool) -> str
 
 
 def is_heading_block(block: dict) -> bool:
-    """段落全体が<u>下線</u>で装飾された、小見出しとして使われるブロックかどうか。
-    小見出しの直前だけ1行分ではなく2行分の空きにしたい、という要望に対応するため
-    (実際の記事では、CPUの説明などが続いたあとに次の小見出しへ入る箇所が、
-    通常の段落間より広めに空いていた方が読みやすいとの判断)。"""
+    """直前に通常より広い間隔(2行分)を空けたい、見出し的なブロックかどうか。
+    次のいずれかに該当する場合にTrueを返す:
+    - "# "で始まる本物の見出し(<h3>)ブロック
+    - 段落全体が<u>下線</u>で装飾された、小見出しとして使われるブロック(旧来の
+      擬似見出し記法。実際の記事では、説明が続いたあとに次の見出しへ入る箇所が
+      通常の段落間より広めに空いていた方が読みやすいとの判断で追加した)。"""
     if block["type"] != "text" or block.get("quote"):
         return False
+    if block.get("heading"):
+        return True
     non_br_runs = [r for r in block["runs"] if r[0] != BR_MARKER]
     return bool(non_br_runs) and all(underline for _, _, _, underline in non_br_runs)
 
@@ -426,6 +451,8 @@ def render_block_html(block: dict) -> str:
     inner = "".join(render_run_html(t, b, i, u) for t, b, i, u in block["runs"])
     if block.get("quote"):
         return f"<blockquote>{inner}</blockquote>"
+    if block.get("heading"):
+        return f"<h3>{inner}</h3>"
     return inner
 
 
