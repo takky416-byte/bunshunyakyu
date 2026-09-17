@@ -538,36 +538,26 @@ TRIX_DROP_FILE_JS = """
     // 処理が止まる)、添付要素が一切作られない不具合が実機テストで判明した
     // (見出し・画像2枚・段落・引用と本文が育った状態で3枚目を挿入しようとすると
     // 必ず再現し、本文がまだ短い1・2枚目では画面内に収まるため再現しなかった)。
-    // ドロップ前にカーソル位置を画面内へ確実にスクロールしてから座標を
-    // 計算することで防ぐ。
-    try {
-        const selForScroll = window.getSelection();
-        if (selForScroll && selForScroll.rangeCount > 0) {
-            const node = selForScroll.getRangeAt(0).startContainer;
-            const scrollTarget = node.nodeType === 1 ? node : node.parentElement;
-            if (scrollTarget && scrollTarget.scrollIntoView) {
-                scrollTarget.scrollIntoView({ block: "center", inline: "nearest" });
-            }
-        }
-    } catch (e) {}
-    // このサイトのドロップ処理は、DragEventのclientX/clientY座標をもとに
-    // 挿入位置を決めているらしいことが実機テストで判明した。以前は常に
-    // 「エディタ全体の枠の中央」という固定座標を使っていたため、1枚目は
-    // 本文が短く偶然近い位置に落ちて成功するが、本文が長くなる2枚目以降は
-    // 実際のカーソル位置と大きくズレてしまい、画像が本文に反映されない
-    // (アップロード自体は成功するが、挿入先が見つからず消えてしまう)
-    // 不具合が発生した。setSelectedRange()の直後は実際のDOM上のカーソル位置
-    // (window.getSelection())も連動して更新されるため、その座標を使うことで
-    // 常に「今のカーソルの位置」にドロップされるようにする(上のスクロール後に
-    // 改めて座標を取得するため、常に画面内の座標になる)。
+    // 最初は scrollIntoView() してから改めて getBoundingClientRect() を
+    // 呼び直す2段階の方式にしたが、実機テストでスクロール量と再計算した座標が
+    // 食い違う(scrollYだけ大きく動いているのにclientYが画面外の負の値のまま)
+    // 現象が実際に発生し、直らなかった。scrollIntoView後の再測定という
+    // 2段階に頼らず、まずカーソル位置のドキュメント全体における絶対座標を
+    // 求め、それが画面内に収まるようwindow.scrollTo()で直接スクロールした上で、
+    // スクロール量から画面上の座標を自分で計算する(DOMの再測定に頼らない
+    // ため、ズレが起きない)方式に変更する。
     let clientX, clientY;
     try {
         const sel = window.getSelection();
         if (sel && sel.rangeCount > 0) {
             const r = sel.getRangeAt(0).getBoundingClientRect();
             if (r && (r.width || r.height || r.top || r.left)) {
-                clientX = r.left;
-                clientY = r.top + r.height / 2;
+                const absX = r.left + window.scrollX;
+                const absY = r.top + r.height / 2 + window.scrollY;
+                const desiredScrollY = Math.max(0, absY - window.innerHeight / 2);
+                window.scrollTo(window.scrollX, desiredScrollY);
+                clientX = absX - window.scrollX;
+                clientY = absY - window.scrollY;
             }
         }
     } catch (e) {}
