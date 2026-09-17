@@ -426,6 +426,14 @@ TRIX_INSERT_HTML_JS = """
 ([html]) => {
     const el = document.querySelector('trix-editor');
     if (!el || !el.editor) return false;
+    // 直前の操作(特に画像アップロード完了後の再描画)でカーソル/選択範囲が
+    // 本文の末尾以外の場所にズレていると、次の insertHTML() がその選択範囲を
+    // 上書き(置き換え)してしまい、既に入れたはずの内容が消えたり順番が
+    // 入れ替わったりする不具合が実機テストで見つかった。挿入前に必ず
+    // カーソルを本文の一番最後へ強制的に戻してから挿入することで防ぐ
+    // (1e9のような大きすぎる位置を渡すと、Trixが自動的に本文末尾の位置に
+    // 丸めてくれることを利用している)。
+    el.editor.setSelectedRange([1e9, 1e9]);
     el.editor.insertHTML(html);
     return true;
 }
@@ -502,6 +510,10 @@ TRIX_DROP_FILE_JS = """
 ([b64, filename, mime]) => {
     const el = document.querySelector('trix-editor');
     if (!el) return false;
+    // insertHTML()と同じ理由(直前の操作でカーソル/選択範囲がズレていると、
+    // 次の挿入が既存の内容を上書きしてしまう)で、ドロップ前にカーソルを
+    // 本文の一番最後へ強制的に戻す。
+    if (el.editor) el.editor.setSelectedRange([1e9, 1e9]);
     const byteChars = atob(b64);
     const bytes = new Uint8Array(byteChars.length);
     for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
