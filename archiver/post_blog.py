@@ -107,13 +107,20 @@ import shutil
 import sys
 import tempfile
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
 
 DEFAULT_LOGIN_URL = "https://yakyu.bunshun.jp/login"
 DEFAULT_NEW_POST_URL = "https://yakyu.bunshun.jp/blogs/new"
 DEFAULT_INSPECT_DIR = Path("archive/_new_post_inspect")
+
+# 文春野球友の会サイトの予約投稿は、実行(投稿)時点からこの日数後までしか設定
+# できないらしい(サイト側に明文化されたドキュメントがあるわけではなく、
+# 実際の挙動に基づくユーザーからの報告)。これを超える日時のまま送信すると、
+# サイト側でエラーになるか、意図しない日時で保存される可能性があるため、
+# 送信前にチェックする。実際の上限が違っていた場合はこの定数を調整すればよい。
+MAX_RESERVATION_DAYS = 30
 
 # 新規投稿フォームの各要素を探すための候補。
 # 2026-09時点で実際に確認できたHTML(yakyu.bunshun.jp/blogs/new, OSIRO基盤)を元にしている。
@@ -1211,8 +1218,24 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
     return jobs
 
 
+def check_publish_at_within_window(publish_at: datetime) -> None:
+    """予約日時が MAX_RESERVATION_DAYS 日以内かどうかを確認する。超えている場合は
+    フォーム入力を始める前に(ムダな操作をする前に)エラーにする。"""
+    limit = datetime.now() + timedelta(days=MAX_RESERVATION_DAYS)
+    if publish_at > limit:
+        raise RuntimeError(
+            f"予約日時({publish_at:%Y-%m-%d %H:%M})が、実行時点から"
+            f"{MAX_RESERVATION_DAYS}日後({limit:%Y-%m-%d %H:%M})を超えています。"
+            "文春野球友の会サイトでは、予約投稿は実行時点からこの日数後までしか"
+            "設定できないようです。投稿日が近づいてから改めて実行するか、"
+            "日時を近づけてください。"
+        )
+
+
 def post_one_article(page, new_post_url: str, job: dict, inspect_out: Path | None = None) -> None:
     """1記事分のタイトル/画像/本文の入力〜送信を行う。"""
+    if job["mode"] == "publish_at":
+        check_publish_at_within_window(job["publish_at"])
     print(f"[新規投稿フォームを開く] {new_post_url}")
     page.goto(new_post_url, wait_until="networkidle", timeout=30000)
     page.wait_for_timeout(1000)
