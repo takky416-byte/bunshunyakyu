@@ -478,7 +478,13 @@ def is_heading_block(block: dict) -> bool:
 def render_block_html(block: dict) -> str:
     inner = "".join(render_run_html(t, b, i, u) for t, b, i, u in block["runs"])
     if block.get("quote"):
-        return f"<blockquote>{inner}</blockquote>"
+        # 見出し(下記)と同じ理由: <blockquote>だけを挿入すると、Trixエディタ
+        # 内部のカーソルが引用ブロックの「中」に留まってしまい、直後に挿入
+        # する画像や段落が引用の中に巻き込まれる不具合が実機テストで見つかった
+        # (これまでの記事では引用が必ず本文の一番最後だったため表面化して
+        # いなかった)。引用の直後に空の段落を挿入し、カーソルを確実に
+        # 引用の外へ出す。
+        return f"<blockquote>{inner}</blockquote><div><br></div>"
     if block.get("heading"):
         # <h3>だけを挿入すると、Trixエディタ内部のカーソルが見出しブロックの
         # 「中」に留まってしまい、直後に挿入する画像や段落が見出しの中に
