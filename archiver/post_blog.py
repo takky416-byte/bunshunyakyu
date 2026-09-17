@@ -1207,8 +1207,7 @@ def discover_blog_dirs(extracted_root: Path) -> list[Path]:
     """展開したzipの直下から、ブログ(記事シリーズ)ごとのフォルダを見つける。
     複数のブログをまとめて渡す想定のzipは、直下にブログごとのフォルダを並べる
     (各フォルダの中身は --batch-dir と同じ規約: 記事ごとのサブフォルダ、
-    省略可の tags.txt / WRITING_RULES.md)。Macが自動生成する "__MACOSX" や
-    隠しフォルダは無視する。
+    省略可の tags.txt)。Macが自動生成する "__MACOSX" や隠しフォルダは無視する。
 
     直下のフォルダが記事フォルダ自身(article.txt等を直接持つ)の場合、または
     直下にフォルダが1つも無い場合は、1ブログだけのzip(記事フォルダがzip直下に
