@@ -461,20 +461,28 @@ def render_run_html(text: str, bold: bool, italic: bool, underline: bool) -> str
 
 
 def render_block_html(block: dict) -> str:
-    # 見出し(<h3>)・引用(<blockquote>)の直後に、カーソルを外へ出すための空の
-    # 段落(<div><br></div>)を自動挿入していた時期があったが、実際に公開された
-    # 別記事の保存データ(見出しを多用する記事)を確認したところ、見出し・引用の
-    # 直後にそのような空の段落は一切無く、次の段落がそのまま(通常の<br><br>
-    # 区切りだけで)続いていた。以前「見出し/引用の直後で次の内容が巻き込まれる」
-    # 不具合が実機テストで見つかった際、この空div追加とあわせて本文末尾位置の
-    # 計算(setSelectedRangeに渡す値)も修正しており、実際の原因は後者(不正確な
-    # 末尾位置)だった可能性が高い。空divを入れないほうが実際の公開データの
-    # 見た目(見出し直後の空行が無い)に一致するため、廃止した。
     inner = "".join(render_run_html(t, b, i, u) for t, b, i, u in block["runs"])
     if block.get("quote"):
-        return f"<blockquote>{inner}</blockquote>"
+        # 見出し(下記)と同じ理由: <blockquote>だけを挿入すると、Trixエディタ
+        # 内部のカーソルが引用ブロックの「中」に留まってしまい、直後に挿入
+        # する画像や段落が引用の中に巻き込まれる不具合が実機テストで見つかった
+        # (これまでの記事では引用が必ず本文の一番最後だったため表面化して
+        # いなかった)。引用の直後に空の段落を挿入し、カーソルを確実に
+        # 引用の外へ出す。
+        #
+        # 補足: 実際に公開された別記事の保存データに空divが無かったことから、
+        # 一時この空div挿入を廃止したことがあるが、実機テストで再現性のある
+        # 深刻な巻き込み・順序入れ替わり不具合(見出しの中に後続の複数ブロックが
+        # まとめて吸い込まれる)が再発したため元に戻した。あの別記事は恐らく
+        # このツール以外の方法(コピペ等)で書かれたものであり、参考にならない。
+        return f"<blockquote>{inner}</blockquote><div><br></div>"
     if block.get("heading"):
-        return f"<h3>{inner}</h3>"
+        # <h3>だけを挿入すると、Trixエディタ内部のカーソルが見出しブロックの
+        # 「中」に留まってしまい、直後に挿入する画像や段落が見出しの中に
+        # 巻き込まれたり、挿入順が入れ替わったりする不具合が実際に発生した
+        # (--draftでの実機テストで確認)。見出しの直後に空の段落を明示的に
+        # 挿入し、カーソルを確実に見出しの外へ出す(上記blockquoteの補足も参照)。
+        return f"<h3>{inner}</h3><div><br></div>"
     return inner
 
 
@@ -684,14 +692,15 @@ def fill_body(page, blocks: list[dict]) -> None:
         )
     loc.click(force=True)
     page.wait_for_timeout(100)
-    # 画像のドラッグ&ドロップは、Trix側が添付の直後に独自で1行分の空き
-    # (カーソルの継続入力用)を自動的に挿入する。そのため、画像の直後のブロックが
-    # 更に自分の区切り用<br><br>を追加すると、空行が二重に入って元の原稿より
-    # 間隔が広くなりすぎてしまう不具合が実機テストで見つかった。直前のブロックが
-    # 画像だったかを覚えておき、その直後だけは区切り用の<br><br>を省略する
-    # (見出し・引用はTrix側でこの種の自動追加が無いことを、実際に公開された
-    # 別記事の保存データで確認済みのため、通常のブロックと同じ扱いでよい)。
-    prev_was_image = False
+    # 見出し(<h3>)・引用(<blockquote>)ブロックは、render_block_html()が
+    # カーソルをブロックの外へ出すため末尾に自前の空の段落(<div><br></div>)を
+    # 追加している。また、画像のドラッグ&ドロップも、Trix側が添付の直後に
+    # 独自で1行分の空き(カーソルの継続入力用)を自動的に挿入する。そのため、
+    # これらの直後のブロックが更に自分の区切り用<br><br>を追加すると、空行が
+    # 二重に入って元の原稿より間隔が広くなりすぎてしまう不具合が実機テストで
+    # 見つかった。直前のブロックが見出し/引用/画像だったかを覚えておき、その
+    # 直後だけは区切り用の<br><br>を省略する。
+    prev_has_trailing_spacer = False
     for i, block in enumerate(blocks):
         if block["type"] == "image":
             # 空のエディタにいきなり画像をドロップすると、添付そのものが
@@ -700,10 +709,10 @@ def fill_body(page, blocks: list[dict]) -> None:
             # 最初の画像の前には必ずいくつか<br>が入っていたため、直前に
             # 何もない場合(i==0)でも<br><br>を挿入してから画像をドロップする。
             # ブロック間の区切りとしての<br><br>もここで兼ねる。
-            prefix = "" if (i > 0 and prev_was_image) else "<br><br>"
+            prefix = "" if (i > 0 and prev_has_trailing_spacer) else "<br><br>"
             insert_raw_html(page, prefix)
             insert_inline_image(page, block["path"])
-            prev_was_image = True
+            prev_has_trailing_spacer = True
         else:
             # ブロック(article.txtの空行区切り段落)の間の区切りは、他の改行と
             # 同じ<br><br>を使う。ただし、区切り用の<br><br>だけを単独で
@@ -715,12 +724,12 @@ def fill_body(page, blocks: list[dict]) -> None:
             # 潰れ方に変わった)。そのため、区切りの<br><br>は独立して挿入せず、
             # 続くブロック本体のHTMLと同じ1回のinsertHTML()呼び出しに含める
             # (常に何か実内容が後に続く状態にして、末尾と誤認されないようにする)。
-            if i == 0 or prev_was_image:
+            if i == 0 or prev_has_trailing_spacer:
                 prefix = ""
             else:
                 prefix = "<br><br>"
             insert_raw_html(page, prefix + render_block_html(block))
-            prev_was_image = False
+            prev_has_trailing_spacer = bool(block.get("heading") or block.get("quote"))
     # Vue側(content.body、実際に送信される値そのもの)が、見た目のDOM内容と
     # 食い違うことが実際に確認された(figureはDOM上に残っているのに、送信データ
     # には含まれない)。合成の trix-change イベントを発火する方法では直らな
