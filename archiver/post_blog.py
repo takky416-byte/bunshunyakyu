@@ -460,21 +460,6 @@ def render_run_html(text: str, bold: bool, italic: bool, underline: bool) -> str
     return html
 
 
-def is_heading_block(block: dict) -> bool:
-    """直前に通常より広い間隔(2行分)を空けたい、見出し的なブロックかどうか。
-    次のいずれかに該当する場合にTrueを返す:
-    - "# "で始まる本物の見出し(<h3>)ブロック
-    - 段落全体が<u>下線</u>で装飾された、小見出しとして使われるブロック(旧来の
-      擬似見出し記法。実際の記事では、説明が続いたあとに次の見出しへ入る箇所が
-      通常の段落間より広めに空いていた方が読みやすいとの判断で追加した)。"""
-    if block["type"] != "text" or block.get("quote"):
-        return False
-    if block.get("heading"):
-        return True
-    non_br_runs = [r for r in block["runs"] if r[0] != BR_MARKER]
-    return bool(non_br_runs) and all(underline for _, _, _, underline in non_br_runs)
-
-
 def render_block_html(block: dict) -> str:
     inner = "".join(render_run_html(t, b, i, u) for t, b, i, u in block["runs"])
     if block.get("quote"):
@@ -703,6 +688,13 @@ def fill_body(page, blocks: list[dict]) -> None:
         )
     loc.click(force=True)
     page.wait_for_timeout(100)
+    # 見出し(<h3>)・引用(<blockquote>)ブロックは、render_block_html()が
+    # カーソルをブロックの外へ出すため末尾に自前の空の段落(<div><br></div>)を
+    # 追加している。そのため、見出し/引用の直後のブロックが更に自分の区切り
+    # 用<br><br>を追加すると、空行が二重に入って元の原稿より間隔が広くなり
+    # すぎてしまう不具合が実機テストで見つかった。直前のブロックが見出し/
+    # 引用だったかを覚えておき、その直後だけは区切り用の<br><br>を省略する。
+    prev_has_trailing_spacer = False
     for i, block in enumerate(blocks):
         if block["type"] == "image":
             # 空のエディタにいきなり画像をドロップすると、添付そのものが
@@ -711,8 +703,10 @@ def fill_body(page, blocks: list[dict]) -> None:
             # 最初の画像の前には必ずいくつか<br>が入っていたため、直前に
             # 何もない場合(i==0)でも<br><br>を挿入してから画像をドロップする。
             # ブロック間の区切りとしての<br><br>もここで兼ねる。
-            insert_raw_html(page, "<br><br>")
+            prefix = "" if (i > 0 and prev_has_trailing_spacer) else "<br><br>"
+            insert_raw_html(page, prefix)
             insert_inline_image(page, block["path"])
+            prev_has_trailing_spacer = False
         else:
             # ブロック(article.txtの空行区切り段落)の間の区切りは、他の改行と
             # 同じ<br><br>を使う。ただし、区切り用の<br><br>だけを単独で
@@ -724,15 +718,12 @@ def fill_body(page, blocks: list[dict]) -> None:
             # 潰れ方に変わった)。そのため、区切りの<br><br>は独立して挿入せず、
             # 続くブロック本体のHTMLと同じ1回のinsertHTML()呼び出しに含める
             # (常に何か実内容が後に続く状態にして、末尾と誤認されないようにする)。
-            if i == 0:
+            if i == 0 or prev_has_trailing_spacer:
                 prefix = ""
-            elif is_heading_block(block):
-                # 小見出しの直前だけ、通常の1行分(<br><br>)ではなく2行分
-                # (<br><br><br>)空ける。
-                prefix = "<br><br><br>"
             else:
                 prefix = "<br><br>"
             insert_raw_html(page, prefix + render_block_html(block))
+            prev_has_trailing_spacer = bool(block.get("heading") or block.get("quote"))
     # Vue側(content.body、実際に送信される値そのもの)が、見た目のDOM内容と
     # 食い違うことが実際に確認された(figureはDOM上に残っているのに、送信データ
     # には含まれない)。合成の trix-change イベントを発火する方法では直らな
