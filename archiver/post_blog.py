@@ -690,10 +690,12 @@ def fill_body(page, blocks: list[dict]) -> None:
     page.wait_for_timeout(100)
     # 見出し(<h3>)・引用(<blockquote>)ブロックは、render_block_html()が
     # カーソルをブロックの外へ出すため末尾に自前の空の段落(<div><br></div>)を
-    # 追加している。そのため、見出し/引用の直後のブロックが更に自分の区切り
-    # 用<br><br>を追加すると、空行が二重に入って元の原稿より間隔が広くなり
-    # すぎてしまう不具合が実機テストで見つかった。直前のブロックが見出し/
-    # 引用だったかを覚えておき、その直後だけは区切り用の<br><br>を省略する。
+    # 追加している。また、画像のドラッグ&ドロップも、Trix側が添付の直後に
+    # 独自で1行分の空き(カーソルの継続入力用)を自動的に挿入する。そのため、
+    # これらの直後のブロックが更に自分の区切り用<br><br>を追加すると、空行が
+    # 二重に入って元の原稿より間隔が広くなりすぎてしまう不具合が実機テストで
+    # 見つかった。直前のブロックが見出し/引用/画像だったかを覚えておき、その
+    # 直後だけは区切り用の<br><br>を省略する。
     prev_has_trailing_spacer = False
     for i, block in enumerate(blocks):
         if block["type"] == "image":
@@ -706,7 +708,7 @@ def fill_body(page, blocks: list[dict]) -> None:
             prefix = "" if (i > 0 and prev_has_trailing_spacer) else "<br><br>"
             insert_raw_html(page, prefix)
             insert_inline_image(page, block["path"])
-            prev_has_trailing_spacer = False
+            prev_has_trailing_spacer = True
         else:
             # ブロック(article.txtの空行区切り段落)の間の区切りは、他の改行と
             # 同じ<br><br>を使う。ただし、区切り用の<br><br>だけを単独で
