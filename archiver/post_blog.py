@@ -625,6 +625,7 @@ def insert_inline_image(page, image_path: str) -> None:
     before_count = page.evaluate(
         "() => document.querySelectorAll('trix-editor figure[data-trix-attachment]').length"
     )
+    print(f"  --- ドロップ開始: {resolved.name}(直前の添付数={before_count}) ---")
     ok = page.evaluate(TRIX_DROP_FILE_JS, [b64, resolved.name, mime])
     if not ok:
         raise RuntimeError(
@@ -645,6 +646,7 @@ def insert_inline_image(page, image_path: str) -> None:
         # (重複の心配がない)ため、もう一度同じドロップをやり直す。
         print("  [警告] 画像の添付が作成されませんでした。もう一度ドラッグ&ドロップを"
               "やり直します。", file=sys.stderr)
+        print(f"  --- ドロップ再試行: {resolved.name} ---")
         page.evaluate(TRIX_DROP_FILE_JS, [b64, resolved.name, mime])
         status = wait_for_uploads_to_finish(page, before_count=before_count)
     if status != "ok":
@@ -1530,6 +1532,29 @@ def main() -> None:
                   f"{dialog.message!r} → 承認(OK)します。")
             dialog.accept()
         page.on("dialog", _on_dialog)
+
+        # 3枚目以降の画像ドロップだけが毎回「添付要素が一切作られない」原因を、
+        # これまで位置・フォーカス・イベントの組み合わせを変える推測だけで
+        # 何度も追いかけてきたが改善しなかったため、推測をやめて実際にブラウザ内で
+        # 何が起きているか(JSエラー・実際に発生したPOST/PUT通信)を、ドロップの
+        # 瞬間も含めて実行中ずっとリアルタイムでターミナルに出すようにする。
+        def _on_console(msg):
+            print(f"  [console:{msg.type}] {msg.text}")
+
+        def _on_pageerror(err):
+            print(f"  [pageerror] {err}")
+
+        def _on_request(req):
+            if req.method in ("POST", "PUT"):
+                print(f"  [network] {req.method} {req.url}")
+
+        def _on_requestfailed(req):
+            print(f"  [requestfailed] {req.method} {req.url} - {req.failure}")
+
+        page.on("console", _on_console)
+        page.on("pageerror", _on_pageerror)
+        page.on("request", _on_request)
+        page.on("requestfailed", _on_requestfailed)
 
         print(f"[ログイン] {args.login_url}")
         ok = login_with_browser(page, args.login_url, username, password,
