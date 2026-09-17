@@ -578,6 +578,16 @@ def insert_inline_image(page, image_path: str) -> None:
     b64 = base64.b64encode(data).decode("ascii")
     mime = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
 
+    # 本文中に既にある添付の数を覚えておく。2枚目以降の画像を挿入する際、
+    # 「添付が1つ以上ある」「最後の添付のurlがblob以外」というチェックだけでは、
+    # 今回のドロップが実際には何も起こしていない(新しい添付が1つも作られて
+    # いない)のに、前の画像が既にアップロード完了済みであることをもって誤って
+    # 「完了」と判定してしまう不具合が実際にあった(2枚目・3枚目の画像が本文から
+    # 消える原因になっていた)。今回のドロップで添付の数が実際に増えたことまで
+    # 確認することで、この誤判定を防ぐ。
+    before_count = page.evaluate(
+        "() => document.querySelectorAll('trix-editor figure[data-trix-attachment]').length"
+    )
     ok = page.evaluate(TRIX_DROP_FILE_JS, [b64, resolved.name, mime])
     if not ok:
         raise RuntimeError(
@@ -588,18 +598,18 @@ def insert_inline_image(page, image_path: str) -> None:
     # 次の操作に進む前に、この画像のアップロードが完了する(blob:プレビューが
     # 実際のサーバーURLに置き換わる)まで待つ。複数枚挿入する場合、1枚ずつ完了を
     # 待たずに次を挿入すると、アップロード処理が競合して完了しないことがあるため。
-    status = wait_for_uploads_to_finish(page)
+    status = wait_for_uploads_to_finish(page, before_count=before_count)
     if status == "no_attachment":
         # ログには挿入成功と出るのに実際には本文に画像が入らない不具合が
         # 実際にあった(ログイン直後、セッションで最初に処理する記事でのみ
         # 再現しており、待ち時間を延ばしても直らなかったため、時間切れでは
         # なくドロップ操作自体がまだ何も起こしていない状態のまま終わって
-        # いると判断)。この場合はまだ添付が1つも作られていない(重複の
-        # 心配がない)ため、もう一度同じドロップをやり直す。
+        # いると判断)。この場合は今回のドロップで添付が1つも増えていない
+        # (重複の心配がない)ため、もう一度同じドロップをやり直す。
         print("  [警告] 画像の添付が作成されませんでした。もう一度ドラッグ&ドロップを"
               "やり直します。", file=sys.stderr)
         page.evaluate(TRIX_DROP_FILE_JS, [b64, resolved.name, mime])
-        status = wait_for_uploads_to_finish(page)
+        status = wait_for_uploads_to_finish(page, before_count=before_count)
     if status != "ok":
         print("  [警告] 画像のアップロードが完了しないまま処理を続行します。"
               "このまま送信すると画像が保存されない可能性があります。", file=sys.stderr)
@@ -827,7 +837,7 @@ def _dump_tags_debug(page, inspect_out: Path | None) -> None:
         pass
 
 
-def wait_for_uploads_to_finish(page, timeout_ms: int = 45000) -> str:
+def wait_for_uploads_to_finish(page, before_count: int = 0, timeout_ms: int = 45000) -> str:
     """本文中の画像(Trixの添付ファイル)のアップロードが完了するまで待つ。
     Trixは添付ファイルの属性(url)が実際のサーバーURLに更新されても、すでに
     描画済みの<img>要素のsrc属性は自動的には再描画しない(見た目上はblob:の
@@ -837,15 +847,26 @@ def wait_for_uploads_to_finish(page, timeout_ms: int = 45000) -> str:
     判定する(以前は<img src^="blob:">を見ていたため、実際はとっくに完了して
     いても永遠に未完了と誤判定していた)。
 
+    before_count には、このドロップを行う直前の添付の数を渡す。2枚目以降の
+    画像を挿入する際、「添付が1つ以上ある」「最後の添付のurlがblob以外」
+    というチェックだけでは、今回のドロップが実際には何も起こしていない
+    (新しい添付が1つも作られていない)のに、前の画像が既にアップロード完了
+    済みであることをもって誤って「完了」と判定してしまう不具合が実機テストで
+    見つかった(2枚目・3枚目の画像が本文から消える原因になっていた)。
+    添付の数が before_count より実際に増えたことまで確認することで、この
+    誤判定を防ぐ。
+
     戻り値は次の3種類:
-    - "ok": アップロード完了(urlがblob:以外の実際の値になった)
-    - "no_attachment": 添付要素自体が一度も作られなかった(ドロップ操作が
-      何も起こしていない)。ログイン直後、セッションで最初に処理する記事の
-      1枚目でだけ再現する不具合が実際にあり、待ち時間(45秒)を延ばしても
-      直らなかったため、時間切れではなく添付そのものが作られていないと判断
-      できるよう、まずこの状態を先にチェックしている。呼び出し側でこの場合
-      だけ安全に(まだ何も無いので重複の心配なく)ドロップをやり直せる。
-    - "stuck_blob": 添付は作られたが、既定の待ち時間内にurlが実際の値に
+    - "ok": 新しい添付が作られ、アップロード完了(urlがblob:以外の実際の値に
+      なった)
+    - "no_attachment": 今回のドロップで添付要素が1つも増えなかった(ドロップ
+      操作が何も起こしていない)。ログイン直後、セッションで最初に処理する
+      記事の1枚目でだけ再現する不具合が実際にあり、待ち時間(45秒)を延ばして
+      も直らなかったため、時間切れではなく添付そのものが作られていないと
+      判断できるよう、まずこの状態を先にチェックしている。呼び出し側で
+      この場合だけ安全に(今回分の添付がまだ無いので重複の心配なく)
+      ドロップをやり直せる。
+    - "stuck_blob": 添付は増えたが、既定の待ち時間内にurlが実際の値に
       更新されなかった(純粋なアップロード遅延の可能性が高い)。
     既定値は45秒(ヘッダー画像側の待ち時間と同じ)。以前は10秒にしていたが、
     5記事の一括投稿中に2記事だけ本文中の画像が保存されない不具合が実際に
@@ -853,7 +874,8 @@ def wait_for_uploads_to_finish(page, timeout_ms: int = 45000) -> str:
     ため、余裕を持たせた。"""
     try:
         page.wait_for_function(
-            "() => document.querySelectorAll('trix-editor figure[data-trix-attachment]').length > 0",
+            "(before) => document.querySelectorAll('trix-editor figure[data-trix-attachment]').length > before",
+            arg=before_count,
             timeout=5000,
         )
     except Exception:
@@ -863,9 +885,9 @@ def wait_for_uploads_to_finish(page, timeout_ms: int = 45000) -> str:
 
     try:
         page.wait_for_function(
-            """() => {
+            """(before) => {
                 const figs = document.querySelectorAll('trix-editor figure[data-trix-attachment]');
-                if (figs.length === 0) return false;
+                if (figs.length <= before) return false;
                 const last = figs[figs.length - 1];
                 try {
                     const attrs = JSON.parse(last.getAttribute('data-trix-attachment'));
@@ -874,6 +896,7 @@ def wait_for_uploads_to_finish(page, timeout_ms: int = 45000) -> str:
                     return false;
                 }
             }""",
+            arg=before_count,
             timeout=timeout_ms,
         )
         print("  画像のアップロード完了を確認しました。")
