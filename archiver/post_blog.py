@@ -467,7 +467,14 @@ def render_block_html(block: dict) -> str:
     if block.get("quote"):
         return f"<blockquote>{inner}</blockquote>"
     if block.get("heading"):
-        return f"<h3>{inner}</h3>"
+        # <h3>だけを挿入すると、Trixエディタ内部のカーソルが見出しブロックの
+        # 「中」に留まってしまい、直後に挿入する画像や段落が見出しの中に
+        # 巻き込まれたり、挿入順が入れ替わったりする不具合が実際に発生した
+        # (--draftでの実機テストで確認)。実際に公開済みの記事(見出しを使う
+        # 別のブログ)の保存データでも、<h3>...</h3> の直後には必ず空の
+        # <div><br></div> が続いていたため、それに合わせて見出しの直後に
+        # 空の段落を明示的に挿入し、カーソルを確実に見出しの外へ出す。
+        return f"<h3>{inner}</h3><div><br></div>"
     return inner
 
 
