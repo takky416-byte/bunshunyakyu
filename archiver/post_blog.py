@@ -555,6 +555,16 @@ TRIX_DROP_FILE_JS = """
     el.dispatchEvent(new DragEvent('dragenter', opts));
     el.dispatchEvent(new DragEvent('dragover', opts));
     el.dispatchEvent(new DragEvent('drop', opts));
+    // 実際のドラッグ操作では、drop後にdragend(ドラッグ元側)が発火して
+    // ドラッグ状態が後始末される。このシミュレーションではdragenter→
+    // dragover→dropしか発火させていなかったため、1枚目は成功するのに
+    // 2枚目以降は毎回「何も起きない」(添付要素が一切作られない)不具合が
+    // 実機テストで確認された。dragenter/dragleaveの対応関係で「まだドラッグ
+    // 中」の内部状態(オーバーレイ表示用のカウンタ等でよくある実装)が
+    // 残ったままになっている可能性を考え、dragleave/dragendも後追いで
+    // 発火させて後始末する。
+    el.dispatchEvent(new DragEvent('dragleave', opts));
+    el.dispatchEvent(new DragEvent('dragend', opts));
     return true;
 }
 """
