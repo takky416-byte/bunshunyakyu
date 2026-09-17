@@ -1243,6 +1243,11 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
             tags.txt         (省略可。この記事だけ個別の興味関心タグにしたい場合。
                                1行に1つずつタグ名を書く。上のフォルダ直下tags.txtより優先)
 
+    記事が1件だけの場合は、上記のサブフォルダ(2026-09-10-game-recapの部分)で
+    包まなくても、article.txt・画像・tags.txt等をこのフォルダ直下に直接置くだけでも
+    1記事として認識する(ChatGPT等にarticle.txt・画像・tags.txtをまとめてzip出力
+    させたものを、そのまま --batch-zip に渡せるようにするため)。
+
     本文中に差し込む画像は、--body-file と同じく本文ファイル内に
     ![alt](画像ファイル名) と書けばよく(そのフォルダを基準にパスが解決される)、
     フォルダ名の昇順で処理するので、日付や連番をフォルダ名の頭に付けると
@@ -1264,7 +1269,14 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
 
     subdirs = sorted(p for p in path.iterdir() if p.is_dir())
     if not subdirs:
-        raise SystemExit(f"--batch-dir のフォルダの直下に記事フォルダが見つかりません: {path}")
+        if _looks_like_post_dir(path):
+            # サブフォルダが無くても、フォルダ自体がarticle.txt等を直接持つ
+            # (=1記事分そのもの)場合は、それを1記事として扱う。ChatGPTに
+            # article.txt・画像・tags.txtをまとめて生成してもらったフォルダ/zipを
+            # サブフォルダで包まなくてもそのまま使えるようにするため。
+            subdirs = [path]
+        else:
+            raise SystemExit(f"--batch-dir のフォルダの直下に記事フォルダが見つかりません: {path}")
 
     batch_tags_file = path / "tags.txt"
     batch_default_tags = read_tags_file(batch_tags_file) if batch_tags_file.is_file() else None
