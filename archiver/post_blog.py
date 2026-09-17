@@ -423,7 +423,7 @@ def fill_title(page, title: str) -> None:
 
 
 TRIX_INSERT_HTML_JS = """
-([html]) => {
+async ([html]) => {
     const el = document.querySelector('trix-editor');
     if (!el || !el.editor) return false;
     // 直前の操作(特に画像アップロード完了後の再描画、またはフォーカスを
@@ -437,6 +437,15 @@ TRIX_INSERT_HTML_JS = """
     // した位置がそのままカーソル位置として使われてしまう(=末尾に戻せて
     // いない)ことが実機テストで判明したため、実際の本文の文字数を取得して
     // その正確な位置を明示的に指定する。
+    // さらに、見出しを何度も含む長い記事で insertHTML() を間を置かず連続で
+    // 呼ぶと、内容の順序が入れ替わったり1つのブロックが2箇所に分裂したり
+    // する不具合が実機テストで見つかった。Trixエディタ内部のDocument
+    // モデルの更新が描画フレーム単位で行われており、直前の insertHTML() の
+    // 効果が反映される前に次の呼び出しで getDocument() を読むと、古い(短い)
+    // 本文長のまま末尾位置を計算してしまい、結果として既存の内容の途中に
+    // 挿入されてしまうためと考えられる。位置を読む前に描画フレームを1つ
+    // 待つことで、直前の変更が確実に反映された後の正しい末尾位置を取得する。
+    await new Promise((r) => requestAnimationFrame(r));
     const end = el.editor.getDocument().toString().length;
     el.editor.setSelectedRange([end, end]);
     el.editor.insertHTML(html);
@@ -515,6 +524,11 @@ async ([b64, filename, mime]) => {
     // 本文の一番最後へ強制的に戻す。[1e9, 1e9]では実際には末尾に丸められず、
     // 直前にクリックした位置がそのまま使われてしまうことが実機テストで
     // 判明したため、実際の本文の文字数から正確な末尾位置を指定する。
+    // insertHTML()側と同じ理由(Trix内部のDocumentモデルの更新が描画
+    // フレーム単位のため、直前のinsertHTML()の効果が反映される前に
+    // 読むと古い本文長のまま末尾位置を計算してしまう)で、読む前に
+    // 描画フレームを1つ待つ。
+    await new Promise((r) => requestAnimationFrame(r));
     if (el.editor) {
         const end = el.editor.getDocument().toString().length;
         el.editor.setSelectedRange([end, end]);
@@ -713,6 +727,15 @@ def fill_body(page, blocks: list[dict]) -> None:
             insert_raw_html(page, prefix)
             insert_inline_image(page, block["path"])
             prev_has_trailing_spacer = True
+            # 見出しを複数含む長い記事で、この後すぐ次のブロックの
+            # insertHTML()を呼ぶと、内容の順序が入れ替わったり1ブロックが
+            # 2箇所に分裂したりする不具合が実機テストで見つかった(Trix内部の
+            # Documentモデルの更新、またはvue-trixラッパー側のv-model同期が
+            # 描画・反応サイクルに追いつく前に次の操作が走ってしまうためと
+            # 考えられる)。insertHTML()側のrequestAnimationFrame待ちだけでは
+            # 不十分な場合に備え、ここでも実時間で少し待って確実に状態を
+            # 落ち着かせてから次のブロックへ進む。
+            page.wait_for_timeout(150)
         else:
             # ブロック(article.txtの空行区切り段落)の間の区切りは、他の改行と
             # 同じ<br><br>を使う。ただし、区切り用の<br><br>だけを単独で
@@ -730,6 +753,10 @@ def fill_body(page, blocks: list[dict]) -> None:
                 prefix = "<br><br>"
             insert_raw_html(page, prefix + render_block_html(block))
             prev_has_trailing_spacer = bool(block.get("heading") or block.get("quote"))
+            # 画像挿入時と同じ理由(次のブロックのinsertHTML()が、直前の
+            # 変更が完全に反映される前の状態を元に末尾位置を計算してしまう
+            # ことがある)で、テキストブロックの挿入後も少し待つ。
+            page.wait_for_timeout(150)
     # Vue側(content.body、実際に送信される値そのもの)が、見た目のDOM内容と
     # 食い違うことが実際に確認された(figureはDOM上に残っているのに、送信データ
     # には含まれない)。合成の trix-change イベントを発火する方法では直らな
