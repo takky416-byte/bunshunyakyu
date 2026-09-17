@@ -514,19 +514,43 @@ TRIX_DROP_FILE_JS = """
     // 次の挿入が既存の内容を上書きしてしまう)で、ドロップ前にカーソルを
     // 本文の一番最後へ強制的に戻す。
     if (el.editor) el.editor.setSelectedRange([1e9, 1e9]);
+    // このサイトのドロップ処理は、DragEventのclientX/clientY座標をもとに
+    // 挿入位置を決めているらしいことが実機テストで判明した。以前は常に
+    // 「エディタ全体の枠の中央」という固定座標を使っていたため、1枚目は
+    // 本文が短く偶然近い位置に落ちて成功するが、本文が長くなる2枚目以降は
+    // 実際のカーソル位置と大きくズレてしまい、画像が本文に反映されない
+    // (アップロード自体は成功するが、挿入先が見つからず消えてしまう)
+    // 不具合が発生した。setSelectedRange()の直後は実際のDOM上のカーソル位置
+    // (window.getSelection())も連動して更新されるため、その座標を使うことで
+    // 常に「今のカーソルの位置」にドロップされるようにする。
+    let clientX, clientY;
+    try {
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount > 0) {
+            const r = sel.getRangeAt(0).getBoundingClientRect();
+            if (r && (r.width || r.height || r.top || r.left)) {
+                clientX = r.left;
+                clientY = r.top + r.height / 2;
+            }
+        }
+    } catch (e) {}
+    if (clientX === undefined || clientY === undefined) {
+        const rect = el.getBoundingClientRect();
+        clientX = rect.left + rect.width / 2;
+        clientY = rect.top + rect.height / 2;
+    }
     const byteChars = atob(b64);
     const bytes = new Uint8Array(byteChars.length);
     for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
     const file = new File([bytes], filename, { type: mime });
     const dataTransfer = new DataTransfer();
     dataTransfer.items.add(file);
-    const rect = el.getBoundingClientRect();
     const opts = {
         bubbles: true,
         cancelable: true,
         dataTransfer,
-        clientX: rect.left + rect.width / 2,
-        clientY: rect.top + rect.height / 2,
+        clientX,
+        clientY,
     };
     el.dispatchEvent(new DragEvent('dragenter', opts));
     el.dispatchEvent(new DragEvent('dragover', opts));
