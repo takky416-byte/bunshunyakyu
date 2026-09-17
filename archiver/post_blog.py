@@ -518,7 +518,7 @@ def insert_raw_html(page, html: str) -> None:
 
 
 TRIX_DROP_FILE_JS = """
-([b64, filename, mime]) => {
+async ([b64, filename, mime]) => {
     const el = document.querySelector('trix-editor');
     if (!el) return false;
     // insertHTML()と同じ理由(直前の操作でカーソル/選択範囲がズレていると、
@@ -530,6 +530,14 @@ TRIX_DROP_FILE_JS = """
         const end = el.editor.getDocument().toString().length;
         el.editor.setSelectedRange([end, end]);
     }
+    // 直前に何度もinsertHTML()で段落・見出し・引用を連続挿入した直後は、
+    // ページ(スクロール可能な高さ)側のレイアウトがまだ追いついておらず、
+    // window.scrollTo()で十分な位置までスクロールしようとしても、その時点の
+    // 最大スクロール位置でクランプされてしまう(=希望の位置まで動かない)
+    // ことが実機テストのログ(scrollYが前回のドロップ時と全く同じ値のまま
+    // 動いていない)で判明した。レンダリングが追いつくよう、座標を計算する
+    // 前に数フレーム分待つ。
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
     // 本文が育って画面の表示範囲より下にカーソルがある状態でドロップすると、
     // サイト側のドロップ処理が document.caretPositionFromPoint(clientX, clientY)
     // で挿入位置を求める際、画面外の座標に対してnullが返り
@@ -538,27 +546,32 @@ TRIX_DROP_FILE_JS = """
     // 処理が止まる)、添付要素が一切作られない不具合が実機テストで判明した
     // (見出し・画像2枚・段落・引用と本文が育った状態で3枚目を挿入しようとすると
     // 必ず再現し、本文がまだ短い1・2枚目では画面内に収まるため再現しなかった)。
-    // 最初は scrollIntoView() してから改めて getBoundingClientRect() を
-    // 呼び直す2段階の方式にしたが、実機テストでスクロール量と再計算した座標が
-    // 食い違う(scrollYだけ大きく動いているのにclientYが画面外の負の値のまま)
-    // 現象が実際に発生し、直らなかった。scrollIntoView後の再測定という
-    // 2段階に頼らず、まずカーソル位置のドキュメント全体における絶対座標を
-    // 求め、それが画面内に収まるようwindow.scrollTo()で直接スクロールした上で、
-    // スクロール量から画面上の座標を自分で計算する(DOMの再測定に頼らない
-    // ため、ズレが起きない)方式に変更する。
+    // カーソル位置のドキュメント全体における絶対座標を求め、それが画面内に
+    // 収まるようwindow.scrollTo()で直接スクロールする。上記のレイアウト
+    // 遅延で希望の位置までスクロールし切れないことがあるため、最大2回まで
+    // 少し待って再試行する。それでも届かない場合に備え、最終的に
+    // clientX/clientYを必ず画面内の範囲へクランプすることで、
+    // caretPositionFromPoint()がnullを返す事態そのものを避ける(多少位置が
+    // ズレても、添付が一切作られないよりはるかに良い)。
     let clientX, clientY;
     try {
         const sel = window.getSelection();
         if (sel && sel.rangeCount > 0) {
-            const r = sel.getRangeAt(0).getBoundingClientRect();
-            if (r && (r.width || r.height || r.top || r.left)) {
-                const absX = r.left + window.scrollX;
-                const absY = r.top + r.height / 2 + window.scrollY;
-                const desiredScrollY = Math.max(0, absY - window.innerHeight / 2);
+            let r = sel.getRangeAt(0).getBoundingClientRect();
+            let absX = r.left + window.scrollX;
+            let absY = r.top + r.height / 2 + window.scrollY;
+            let desiredScrollY = Math.max(0, absY - window.innerHeight / 2);
+            for (let attempt = 0; attempt < 3; attempt++) {
                 window.scrollTo(window.scrollX, desiredScrollY);
-                clientX = absX - window.scrollX;
-                clientY = absY - window.scrollY;
+                if (Math.abs(window.scrollY - desiredScrollY) < 2) break;
+                await new Promise(r2 => setTimeout(r2, 150));
+                r = sel.getRangeAt(0).getBoundingClientRect();
+                absX = r.left + window.scrollX;
+                absY = r.top + r.height / 2 + window.scrollY;
+                desiredScrollY = Math.max(0, absY - window.innerHeight / 2);
             }
+            clientX = absX - window.scrollX;
+            clientY = absY - window.scrollY;
         }
     } catch (e) {}
     if (clientX === undefined || clientY === undefined) {
@@ -566,15 +579,18 @@ TRIX_DROP_FILE_JS = """
         clientX = rect.left + rect.width / 2;
         clientY = rect.top + rect.height / 2;
     }
-    // scrollIntoView()を入れてもサイト側のdocument.caretPositionFromPoint()が
-    // nullを返すエラーが再現し続けたため、推測を重ねる前に、実際に使っている
-    // 座標そのものと、その座標でcaretPositionFromPoint()を呼んだ結果を
-    // ログに出して確認する。
+    // 上のスクロール再試行でも画面内に収まらなかった場合の最終防衛策として、
+    // 必ず画面内の座標にクランプする。
+    clientX = Math.min(Math.max(clientX, 1), window.innerWidth - 1);
+    clientY = Math.min(Math.max(clientY, 1), window.innerHeight - 1);
+    // 推測を重ねる前に、実際に使っている座標そのものと、その座標で
+    // caretPositionFromPoint()を呼んだ結果をログに出して確認する。
     try {
         const cp = document.caretPositionFromPoint(clientX, clientY);
         console.log("[drop-debug] clientX=" + clientX + " clientY=" + clientY +
             " innerWidth=" + window.innerWidth + " innerHeight=" + window.innerHeight +
             " scrollX=" + window.scrollX + " scrollY=" + window.scrollY +
+            " scrollHeight=" + document.documentElement.scrollHeight +
             " caretPositionFromPoint=" + (cp ? ("offsetNode=" + cp.offsetNode + " offset=" + cp.offset) : "null"));
     } catch (e) {
         console.log("[drop-debug] caretPositionFromPoint threw: " + e);
