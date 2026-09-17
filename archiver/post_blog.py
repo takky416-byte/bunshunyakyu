@@ -588,6 +588,17 @@ def insert_inline_image(page, image_path: str) -> None:
     b64 = base64.b64encode(data).decode("ascii")
     mime = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
 
+    # 1枚目のドロップ(アップロード)は必ず成功するのに、2枚目以降は
+    # dragenter/dragover/drop(dragleave/dragendを足しても)何度リトライしても
+    # 一切反応しない、という再現性の高い不具合が実機テストで確認された。
+    # 座標やイベント列の調整はどれも効果がなかったため、1枚目のアップロード
+    # 完了後にブラウザ側のフォーカスがエディタから外れてしまい、2枚目以降の
+    # ドロップがフォーカスの無い要素への操作として無視されている可能性を考え、
+    # ドロップの直前に毎回エディタを実際にクリックしてフォーカスを戻す。
+    loc, _ = find_first_locator(page, NEW_POST_BODY_SELECTORS, timeout_ms=3000)
+    if loc:
+        loc.click(force=True)
+
     # 本文中に既にある添付の数を覚えておく。2枚目以降の画像を挿入する際、
     # 「添付が1つ以上ある」「最後の添付のurlがblob以外」というチェックだけでは、
     # 今回のドロップが実際には何も起こしていない(新しい添付が1つも作られて
