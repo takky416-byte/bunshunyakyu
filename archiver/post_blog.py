@@ -530,6 +530,26 @@ TRIX_DROP_FILE_JS = """
         const end = el.editor.getDocument().toString().length;
         el.editor.setSelectedRange([end, end]);
     }
+    // 本文が育って画面の表示範囲より下にカーソルがある状態でドロップすると、
+    // サイト側のドロップ処理が document.caretPositionFromPoint(clientX, clientY)
+    // で挿入位置を求める際、画面外の座標に対してnullが返り
+    // (「Cannot destructure property 'offsetNode' of
+    // 'document.caretPositionFromPoint(...)' as it is null.」というエラーで
+    // 処理が止まる)、添付要素が一切作られない不具合が実機テストで判明した
+    // (見出し・画像2枚・段落・引用と本文が育った状態で3枚目を挿入しようとすると
+    // 必ず再現し、本文がまだ短い1・2枚目では画面内に収まるため再現しなかった)。
+    // ドロップ前にカーソル位置を画面内へ確実にスクロールしてから座標を
+    // 計算することで防ぐ。
+    try {
+        const selForScroll = window.getSelection();
+        if (selForScroll && selForScroll.rangeCount > 0) {
+            const node = selForScroll.getRangeAt(0).startContainer;
+            const scrollTarget = node.nodeType === 1 ? node : node.parentElement;
+            if (scrollTarget && scrollTarget.scrollIntoView) {
+                scrollTarget.scrollIntoView({ block: "center", inline: "nearest" });
+            }
+        }
+    } catch (e) {}
     // このサイトのドロップ処理は、DragEventのclientX/clientY座標をもとに
     // 挿入位置を決めているらしいことが実機テストで判明した。以前は常に
     // 「エディタ全体の枠の中央」という固定座標を使っていたため、1枚目は
@@ -538,7 +558,8 @@ TRIX_DROP_FILE_JS = """
     // (アップロード自体は成功するが、挿入先が見つからず消えてしまう)
     // 不具合が発生した。setSelectedRange()の直後は実際のDOM上のカーソル位置
     // (window.getSelection())も連動して更新されるため、その座標を使うことで
-    // 常に「今のカーソルの位置」にドロップされるようにする。
+    // 常に「今のカーソルの位置」にドロップされるようにする(上のスクロール後に
+    // 改めて座標を取得するため、常に画面内の座標になる)。
     let clientX, clientY;
     try {
         const sel = window.getSelection();
