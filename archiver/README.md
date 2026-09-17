@@ -9,12 +9,33 @@
 
 ## セットアップ
 
+Mac/Linux:
+
 ```bash
 cd archiver
 python3 -m venv .venv
-source .venv/bin/activate  # Windows は .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+Windows(PowerShell):
+
+```powershell
+cd archiver
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+- 「このシステムではスクリプトの実行が無効になっているため…」というエラーで
+  `Activate.ps1` が実行できない場合は、そのPowerShellウィンドウだけ実行制限を
+  一時的に緩める `Set-Executionpolicy -Scope Process -ExecutionPolicy Bypass`
+  を先に実行してから、もう一度 `.venv\Scripts\Activate.ps1` を試してください。
+- コマンドプロンプト(cmd.exe)を使う場合は `.venv\Scripts\activate.bat` です。
+
+以降のコマンド例は `python3` と書いていますが、Windowsでは `python` と読み替えて
+ください。仮想環境を有効化した状態(プロンプトの先頭に `(.venv)` と出ている状態)で
+実行してください。
 
 コメント欄がJavaScriptで後から描画されるタイプ(Disqus、Facebookコメント等)の場合は、
 `--render` オプション用に Playwright も入れてください。
