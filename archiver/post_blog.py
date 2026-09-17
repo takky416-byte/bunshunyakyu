@@ -576,6 +576,19 @@ TRIX_DROP_FILE_JS = """
         clientX = rect.left + rect.width / 2;
         clientY = rect.top + rect.height / 2;
     }
+    // scrollIntoView()を入れてもサイト側のdocument.caretPositionFromPoint()が
+    // nullを返すエラーが再現し続けたため、推測を重ねる前に、実際に使っている
+    // 座標そのものと、その座標でcaretPositionFromPoint()を呼んだ結果を
+    // ログに出して確認する。
+    try {
+        const cp = document.caretPositionFromPoint(clientX, clientY);
+        console.log("[drop-debug] clientX=" + clientX + " clientY=" + clientY +
+            " innerWidth=" + window.innerWidth + " innerHeight=" + window.innerHeight +
+            " scrollX=" + window.scrollX + " scrollY=" + window.scrollY +
+            " caretPositionFromPoint=" + (cp ? ("offsetNode=" + cp.offsetNode + " offset=" + cp.offset) : "null"));
+    } catch (e) {
+        console.log("[drop-debug] caretPositionFromPoint threw: " + e);
+    }
     const byteChars = atob(b64);
     const bytes = new Uint8Array(byteChars.length);
     for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
