@@ -533,6 +533,24 @@ async ([b64, filename, mime]) => {
         const end = el.editor.getDocument().toString().length;
         el.editor.setSelectedRange([end, end]);
     }
+    // 実機ログで、2枚目以降の画像ドロップのclientX/clientY/
+    // caretPositionFromPointの結果が、本文が育っているにもかかわらず1枚目と
+    // 全く同じ値になっており、その結果添付が本来の末尾ではなく本文途中の
+    // ランダムな位置に挿入されてしまう不具合が判明した。原因は、直前の
+    // el.editor.setSelectedRange()がTrix自身の内部モデルの選択範囲を更新
+    // するだけで、下のwindow.getSelection()(座標計算に使うブラウザ
+    // ネイティブの選択範囲)には反映されておらず、その手前で行った
+    // loc.click(force=True)でクリックした位置(=毎回ほぼ同じ画面上の位置)の
+    // ままになっていたため。座標計算の前に、ネイティブのSelection/Rangeを
+    // 明示的にエディタ要素の本当の末尾へ移動しておく。
+    try {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        const nativeSel = window.getSelection();
+        nativeSel.removeAllRanges();
+        nativeSel.addRange(range);
+    } catch (e) {}
     // 直前に何度もinsertHTML()で段落・見出し・引用を連続挿入した直後は、
     // ページ(スクロール可能な高さ)側のレイアウトがまだ追いついておらず、
     // window.scrollTo()で十分な位置までスクロールしようとしても、その時点の
