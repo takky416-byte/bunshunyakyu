@@ -574,11 +574,30 @@ async ([b64, filename, mime]) => {
     // clientX/clientYを必ず画面内の範囲へクランプすることで、
     // caretPositionFromPoint()がnullを返す事態そのものを避ける(多少位置が
     // ズレても、添付が一切作られないよりはるかに良い)。
+    // 末尾に折りたたんだRangeのgetBoundingClientRect()は、その位置が
+    // (直前に挿入した見出し等の)ブロック要素の直後で実際の文字の直前に
+    // 来る場合、幅も高さも0の「潰れた」矩形(左上原点(0,0)など、本文と無関係の
+    // 場所)を返すことがあると実機テストで判明した(caretPositionFromPoint()
+    // がサイドメニューのリンク要素などを指してしまい、添付が本文と無関係の
+    // 場所に挿入される不具合の原因)。折りたたんだ位置に幅0のマーカー要素を
+    // 一時的に挿入し、その要素自身のgetBoundingClientRect()を測ることで、
+    // 常に本文中の実際の描画位置を取得する(測定後は直ちに取り除く。Trix
+    // 側のDocumentモデルはこの一時要素を認識しないため、挿入している間に
+    // Trix側の処理が割り込まないよう、挿入・測定・削除を同期的に行う)。
+    function measureCollapsedRangeRect(range) {
+        const marker = document.createElement('span');
+        marker.textContent = '​';
+        const r2 = range.cloneRange();
+        r2.insertNode(marker);
+        const rect = marker.getBoundingClientRect();
+        marker.remove();
+        return rect;
+    }
     let clientX, clientY;
     try {
         const sel = window.getSelection();
         if (sel && sel.rangeCount > 0) {
-            let r = sel.getRangeAt(0).getBoundingClientRect();
+            let r = measureCollapsedRangeRect(sel.getRangeAt(0));
             let absX = r.left + window.scrollX;
             let absY = r.top + r.height / 2 + window.scrollY;
             let desiredScrollY = Math.max(0, absY - window.innerHeight / 2);
@@ -586,7 +605,7 @@ async ([b64, filename, mime]) => {
                 window.scrollTo(window.scrollX, desiredScrollY);
                 if (Math.abs(window.scrollY - desiredScrollY) < 2) break;
                 await new Promise(r2 => setTimeout(r2, 150));
-                r = sel.getRangeAt(0).getBoundingClientRect();
+                r = measureCollapsedRangeRect(sel.getRangeAt(0));
                 absX = r.left + window.scrollX;
                 absY = r.top + r.height / 2 + window.scrollY;
                 desiredScrollY = Math.max(0, absY - window.innerHeight / 2);
@@ -724,6 +743,16 @@ def fill_body(page, blocks: list[dict]) -> None:
         )
     loc.click(force=True)
     page.wait_for_timeout(100)
+    # クリック直後、本当に最初のブロック(先頭段落)だけが本文の一番最後に
+    # 挿入されてしまう(本来1番目に来るはずが、実際には最後に回ってしまう)
+    # 不具合が実機テストで見つかった。クリックした直後のTrix/Vue側の初期化
+    # (フォーカス確立やVue側のv-model初期同期など)がまだ完全に終わっていない
+    # 状態で最初のinsertHTML()を呼んでしまい、その呼び出し自体が実際に反映
+    # されるまでに他の呼び出しより時間がかかっている可能性が高い。実害の
+    # 無い空文字列を一度insertHTML()で挿入して往復させ、この初期化を
+    # 先に済ませてから本番の挿入を始める。
+    insert_raw_html(page, "")
+    page.wait_for_timeout(150)
     # 見出し(<h3>)・引用(<blockquote>)ブロックは、render_block_html()が
     # カーソルをブロックの外へ出すため末尾に自前の空の段落(<div><br></div>)を
     # 追加している。また、画像のドラッグ&ドロップも、Trix側が添付の直後に
