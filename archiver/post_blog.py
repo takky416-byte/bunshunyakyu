@@ -52,6 +52,8 @@ force=True(重なりチェックを無視して強制的にクリック)で行�
     - 斜体: <i>斜体にしたい部分</i>
     - 下線: <u>下線を引きたい部分</u>
     - 組み合わせ可(例: <b><u>太字+下線の見出し</u></b>)
+    - リンク: [リンクにしたい文字列](https://...) (新しいタブで開く。httpsの
+      URLのみ対応。太字/斜体/下線と組み合わせ可)
     - 引用(blockquote): 段落の先頭を "> " にする
     - 見出し(<h3>): 段落の先頭を "# "(半角シャープ+半角スペース)にする
       (例: "# 弘治元年　安芸国・厳島"。このサイトのTrixエディタは見出しレベルを
@@ -210,8 +212,10 @@ BARE_IMAGE_LINE_RE = re.compile(
 # 実際に発生した。**/*/__ による旧記法との一貫性のなさを避けるため、
 # HTMLタグに統一している(ChatGPT等は明示的なHTMLタグであれば素直にそのまま
 # 出力できるため、Markdown側の「独自ルール」を誤って上書きされにくい)。
+LINK_TOKEN_RE = re.compile(r'^\[([^\[\]]+)\]\((https?://[^\s()]+)\)$')
 INLINE_TOKEN_RE = re.compile(
-    r'(\*\*|__|\*|_|</?b>|</?i>|</?u>|<br\s*/?>)', re.IGNORECASE
+    r'(\*\*|__|\*|_|</?b>|</?i>|</?u>|<br\s*/?>|\[[^\[\]]+\]\(https?://[^\s()]+\))',
+    re.IGNORECASE,
 )
 # <br> は改行位置の目印として、実際のテキストには絶対出てこない値に置き換えて
 # runsの中を通し、最終的なHTML組み立て時(render_run_html)に本物の<br>タグに
@@ -234,13 +238,14 @@ def _normalize_excess_markers(text: str) -> str:
     return EXCESS_MARKER_RE.sub(repl, text)
 
 
-def parse_inline_runs(text: str) -> list[tuple[str, bool, bool, bool]]:
-    """段落中の <b>太字</b> / <i>斜体</i> / <u>下線</u> 記法(組み合わせ可)を
-    (テキスト, bold, italic, underline) の並びに分解する。**太字**・*斜体*・
-    __旧下線__ も後方互換のため引き続きトグルとして解釈する。"""
+def parse_inline_runs(text: str) -> list[tuple[str, bool, bool, bool, str | None]]:
+    """段落中の <b>太字</b> / <i>斜体</i> / <u>下線</u> 記法(組み合わせ可)と
+    [リンク文字列](https://...) 記法を、(テキスト, bold, italic, underline, href) の
+    並びに分解する。**太字**・*斜体*・__旧下線__ も後方互換のため引き続き
+    トグルとして解釈する。hrefはリンクでないrunでは常にNone。"""
     text = _normalize_excess_markers(text)
     bold = italic = underline = False
-    runs: list[tuple[str, bool, bool, bool]] = []
+    runs: list[tuple[str, bool, bool, bool, str | None]] = []
     for tok in INLINE_TOKEN_RE.split(text):
         if tok == "":
             continue
@@ -264,9 +269,13 @@ def parse_inline_runs(text: str) -> list[tuple[str, bool, bool, bool]]:
         elif tok_lower == "</u>":
             underline = False
         elif BR_TOKEN_RE.fullmatch(tok):
-            runs.append((BR_MARKER, bold, italic, underline))
+            runs.append((BR_MARKER, bold, italic, underline, None))
         else:
-            runs.append((tok, bold, italic, underline))
+            link_match = LINK_TOKEN_RE.match(tok)
+            if link_match:
+                runs.append((link_match.group(1), bold, italic, underline, link_match.group(2)))
+            else:
+                runs.append((tok, bold, italic, underline, None))
     return runs
 
 
@@ -454,9 +463,12 @@ async ([html]) => {
 """
 
 
-def render_run_html(text: str, bold: bool, italic: bool, underline: bool) -> str:
+def render_run_html(text: str, bold: bool, italic: bool, underline: bool,
+                     href: str | None = None) -> str:
     """1つのテキスト区間を、実際のTrix出力(<strong><em><u>...)と同じ入れ子順で
-    HTML化する。"""
+    HTML化する。hrefが指定されている場合([リンク文字列](https://...)記法から
+    生成されたrun)は、文字装飾を施した内側テキストごと<a>タグで包む(リンクの
+    範囲に太字/斜体/下線を重ねても外側が壊れないよう、<a>は一番外側にする)。"""
     if text == BR_MARKER:
         return "<br>"
     html = escape(text)
@@ -466,11 +478,13 @@ def render_run_html(text: str, bold: bool, italic: bool, underline: bool) -> str
         html = f"<em>{html}</em>"
     if bold:
         html = f"<strong>{html}</strong>"
+    if href:
+        html = f'<a href="{escape(href)}" target="_blank" rel="noopener noreferrer">{html}</a>'
     return html
 
 
 def render_block_html(block: dict) -> str:
-    inner = "".join(render_run_html(t, b, i, u) for t, b, i, u in block["runs"])
+    inner = "".join(render_run_html(t, b, i, u, h) for t, b, i, u, h in block["runs"])
     if block.get("quote"):
         # 見出し(下記)と同じ理由: <blockquote>だけを挿入すると、Trixエディタ
         # 内部のカーソルが引用ブロックの「中」に留まってしまい、直後に挿入
