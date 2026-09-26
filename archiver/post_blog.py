@@ -1288,6 +1288,24 @@ def _looks_like_post_dir(path: Path) -> bool:
     return any((path / name).is_file() for name in _POST_MARKER_FILES)
 
 
+def _unwrap_single_child_dirs(path: Path) -> Path:
+    """Googleドライブでフォルダをそのままzip書き出ししたときのような、
+    ファイルを1つも持たずサブフォルダを1つだけ持つ「ラッパーフォルダ」
+    (文字化けした名前になることが多い)が続く場合、実際にファイルが
+    入っているフォルダまで自動的に降りていく。"""
+    while True:
+        entries = [
+            p for p in path.iterdir()
+            if not p.name.startswith(".") and p.name != "__MACOSX"
+        ]
+        dirs = [p for p in entries if p.is_dir()]
+        files = [p for p in entries if p.is_file()]
+        if len(dirs) == 1 and not files:
+            path = dirs[0]
+            continue
+        return path
+
+
 def discover_blog_dirs(extracted_root: Path) -> list[Path]:
     """展開したzipの直下から、ブログ(記事シリーズ)ごとのフォルダを見つける。
     複数のブログをまとめて渡す想定のzipは、直下にブログごとのフォルダを並べる
@@ -1297,6 +1315,7 @@ def discover_blog_dirs(extracted_root: Path) -> list[Path]:
     直下のフォルダが記事フォルダ自身(article.txt等を直接持つ)の場合、または
     直下にフォルダが1つも無い場合は、1ブログだけのzip(記事フォルダがzip直下に
     そのまま置かれている)とみなし、展開先自身を返す。"""
+    extracted_root = _unwrap_single_child_dirs(extracted_root)
     entries = [
         p for p in extracted_root.iterdir()
         if p.is_dir() and not p.name.startswith(".") and p.name != "__MACOSX"
@@ -1352,6 +1371,7 @@ def load_batch_dir(path: Path, default_mode: str | None, default_publish_at: dat
     if not path.is_dir():
         raise SystemExit(f"--batch-dir に指定したパスがフォルダではありません: {path}")
 
+    path = _unwrap_single_child_dirs(path)
     subdirs = sorted(p for p in path.iterdir() if p.is_dir())
     if not subdirs:
         if _looks_like_post_dir(path):
